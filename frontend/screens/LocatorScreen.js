@@ -4,8 +4,6 @@ import { THEME } from '../theme';
 import { API_URL } from '../App';
 
 export default function LocatorScreen({ user, data, refreshData }) {
-  const [inviteEmail, setInviteEmail] = useState('');
-
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
     if (Platform.OS === 'web') {
@@ -44,33 +42,6 @@ export default function LocatorScreen({ user, data, refreshData }) {
     }
   };
 
-  const handleInvite = async () => {
-    if (!inviteEmail) {
-      showAlert('Ошибка', 'Введите email пользователя');
-      return;
-    }
-
-    try {
-      const familyId = user.family_id || 1;
-      const res = await fetch(`${API_URL}/families/${familyId}/invite`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail }),
-      });
-
-      if (res.ok) {
-        showAlert('Приглашен!', `Пользователь добавлен в вашу семью.`);
-        setInviteEmail('');
-        refreshData();
-      } else {
-        const err = await res.json();
-        showAlert('Ошибка', err.detail || 'Не удалось пригласить пользователя');
-      }
-    } catch (err) {
-      showAlert('Офлайн режим', `Приглашение отправлено пользователю ${inviteEmail} (симуляция)`);
-      setInviteEmail('');
-    }
-  };
 
   return (
     <ScrollView style={styles.container}>
@@ -116,18 +87,11 @@ export default function LocatorScreen({ user, data, refreshData }) {
       </View>
 
       <View style={styles.inviteCard}>
-        <Text style={styles.inviteTitle}>Пригласить члена семьи по Email ✉️</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="email@example.com"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          value={inviteEmail}
-          onChangeText={setInviteEmail}
-        />
-        <TouchableOpacity style={styles.inviteBtn} onPress={handleInvite}>
-          <Text style={styles.inviteBtnText}>Добавить в семью</Text>
-        </TouchableOpacity>
+        <Text style={styles.inviteTitle}>Код вашей семьи</Text>
+        <Text style={styles.joinCodeText}>{data?.join_code || 'Загрузка...'}</Text>
+        <Text style={styles.inviteHint}>
+          Скопируйте этот код и отправьте близким. Они смогут ввести его при регистрации, чтобы присоединиться к вашей семье.
+        </Text>
       </View>
 
       <TouchableOpacity style={styles.shareBtn} onPress={handleShareLocation}>
@@ -253,6 +217,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: THEME.colors.border,
     marginBottom: THEME.spacing.md,
+    alignItems: 'center',
   },
   inviteTitle: {
     fontWeight: 'bold',
@@ -260,25 +225,17 @@ const styles = StyleSheet.create({
     color: THEME.colors.text,
     marginBottom: THEME.spacing.sm,
   },
-  input: {
-    borderWidth: 1,
-    borderColor: THEME.colors.border,
-    borderRadius: THEME.roundness.sm,
-    padding: 10,
-    backgroundColor: '#FAF8F5',
-    color: THEME.colors.text,
-    marginBottom: THEME.spacing.sm,
-    fontSize: 12,
-  },
-  inviteBtn: {
-    backgroundColor: THEME.colors.primary,
-    padding: 10,
-    borderRadius: THEME.roundness.sm,
-    alignItems: 'center',
-  },
-  inviteBtnText: {
-    color: '#FFFFFF',
+  joinCodeText: {
+    fontSize: 24,
     fontWeight: 'bold',
-    fontSize: 12,
+    color: THEME.colors.primary,
+    letterSpacing: 2,
+    marginVertical: THEME.spacing.sm,
+  },
+  inviteHint: {
+    fontSize: 11,
+    color: THEME.colors.textLight,
+    textAlign: 'center',
+    marginTop: THEME.spacing.sm,
   }
 });

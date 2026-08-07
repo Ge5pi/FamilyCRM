@@ -116,6 +116,7 @@ class ExpenseResponse(ExpenseBase, ORMBase):
 class FamilyOverview(ORMBase):
     id: int
     name: str
+    join_code: str
     users: List[UserResponse] = []
     events: List[EventResponse] = []
     tasks: List[TaskResponse] = []

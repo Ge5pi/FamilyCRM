@@ -9,6 +9,9 @@ export default function AuthScreen({ onLoginSuccess }) {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState('Parent'); // Default role Parent
+  const [familyChoice, setFamilyChoice] = useState('create'); // 'create' or 'join'
+  const [createFamilyName, setCreateFamilyName] = useState('');
+  const [joinCode, setJoinCode] = useState('');
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -27,7 +30,14 @@ export default function AuthScreen({ onLoginSuccess }) {
 
     const endpoint = isRegister ? '/auth/register' : '/auth/login';
     const payload = isRegister 
-      ? { email, password, name, role }
+      ? { 
+          email, 
+          password, 
+          name, 
+          role,
+          ...(familyChoice === 'create' && createFamilyName ? { create_family_name: createFamilyName } : {}),
+          ...(familyChoice === 'join' && joinCode ? { join_code: joinCode } : {})
+        }
       : { email, password };
 
     try {
@@ -114,6 +124,42 @@ export default function AuthScreen({ onLoginSuccess }) {
                 </TouchableOpacity>
               ))}
             </View>
+
+            <View style={styles.familyChoiceContainer}>
+              <TouchableOpacity
+                style={[styles.familyChoiceBtn, familyChoice === 'create' && styles.familyChoiceBtnActive]}
+                onPress={() => setFamilyChoice('create')}
+              >
+                <Text style={[styles.familyChoiceText, familyChoice === 'create' && styles.familyChoiceTextActive]}>
+                  Создать семью
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.familyChoiceBtn, familyChoice === 'join' && styles.familyChoiceBtnActive]}
+                onPress={() => setFamilyChoice('join')}
+              >
+                <Text style={[styles.familyChoiceText, familyChoice === 'join' && styles.familyChoiceTextActive]}>
+                  Присоединиться
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {familyChoice === 'create' ? (
+              <TextInput
+                style={styles.input}
+                placeholder="Название новой семьи"
+                value={createFamilyName}
+                onChangeText={setCreateFamilyName}
+              />
+            ) : (
+              <TextInput
+                style={styles.input}
+                placeholder="Код семьи (например, A1B2C3)"
+                autoCapitalize="characters"
+                value={joinCode}
+                onChangeText={setJoinCode}
+              />
+            )}
           </>
         )}
 
@@ -207,6 +253,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: 'bold',
     color: THEME.colors.text,
+  },
+  familyChoiceContainer: {
+    flexDirection: 'row',
+    marginBottom: THEME.spacing.sm,
+    backgroundColor: '#FAF8F5',
+    borderRadius: THEME.roundness.sm,
+    padding: 4,
+  },
+  familyChoiceBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: THEME.roundness.sm,
+  },
+  familyChoiceBtnActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 1,
+    elevation: 1,
+  },
+  familyChoiceText: {
+    fontSize: 12,
+    color: THEME.colors.textLight,
+  },
+  familyChoiceTextActive: {
+    color: THEME.colors.text,
+    fontWeight: 'bold',
   },
   submitBtn: {
     backgroundColor: THEME.colors.primary,
