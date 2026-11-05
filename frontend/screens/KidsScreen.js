@@ -1,16 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, Platform } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { api } from '../api';
+import { formatDate } from '../datetime';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
 
 export default function KidsScreen({ user, refreshData }) {
-  const [purchasedItems, setPurchasedItems] = useState(['Обои', 'Коврик']);
-  const [localCoins, setLocalCoins] = useState(user.coins || 0);
-
-  // Keep local coins in sync with backend user prop
-  useEffect(() => {
-    setLocalCoins(user.coins || 0);
-  }, [user.coins]);
+  const [room, setRoom] = useState(null);
+  const [shopItems, setShopItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -24,81 +32,107 @@ export default function KidsScreen({ user, refreshData }) {
   // Cross-platform Confirm wrapper
   const showConfirm = (title, message, onConfirm) => {
     if (Platform.OS === 'web') {
-      const confirmed = window.confirm(`${title}\n\n${message}`);
-      if (confirmed) onConfirm();
+      if (window.confirm(`${title}\n\n${message}`)) onConfirm();
     } else {
       Alert.alert(title, message, [
         { text: 'Отмена', style: 'cancel' },
-        { text: 'ОК', onPress: onConfirm, style: 'destructive' }
+        { text: 'ОК', onPress: onConfirm, style: 'destructive' },
       ]);
     }
   };
 
-  const shopItems = [
-    { name: 'Кровать супергероя', cost: 40, icon: '🛏️' },
-    { name: 'Игровой ПК', cost: 80, icon: '🖥️' },
-    { name: 'Кот Рыжик', cost: 60, icon: '🐈' },
-    { name: 'Полка с комиксами', cost: 25, icon: '📚' },
-    { name: 'Ящик для игрушек', cost: 20, icon: '📦' },
-    { name: 'Торшер', cost: 15, icon: '💡' },
-    { name: 'Плакат Супергероев', cost: 10, icon: '🖼️' },
-    { name: 'Аквариум', cost: 50, icon: '🐠' },
-  ];
+  const loadRoom = useCallback(async () => {
+    try {
+      const [roomData, items] = await Promise.all([
+        api.get(`/users/${user.id}/room`),
+        api.get('/shop/items'),
+      ]);
+      setRoom(roomData);
+      setShopItems(items || []);
+      setErrorMsg('');
+    } catch (err) {
+      setErrorMsg(err.message || 'Не удалось загрузить комнату');
+    } finally {
+      setLoading(false);
+    }
+  }, [user.id]);
+
+  useEffect(() => {
+    loadRoom();
+  }, [loadRoom]);
+
+  const coins = room ? room.coins : user.coins || 0;
+  const purchasedKeys = (room?.purchases || []).map((purchase) => purchase.item_key);
 
   const buyItem = (item) => {
-    if (purchasedItems.includes(item.name)) {
+    if (busyKey) return;
+    if (purchasedKeys.includes(item.key)) {
       showAlert('Уже куплено', 'Этот предмет уже есть в твоей комнате!');
       return;
     }
-    if (localCoins < item.cost) {
+    if (coins < item.price) {
       showAlert(
         'Недостаточно коинов 😔',
-        `Нужно ${item.cost} 🪙, а у тебя ${localCoins} 🪙.\nВыполняй задачи в разделе "Задачи", чтобы заработать!`
+        `Нужно ${item.price} 🪙, а у тебя ${coins} 🪙.\n` +
+          'Выполняй задачи в разделе "Задачи", чтобы заработать!'
       );
       return;
     }
 
     showConfirm(
       'Подтвердить покупку?',
-      `Купить "${item.name}" за ${item.cost} 🪙?`,
-      () => {
-        setLocalCoins(prev => prev - item.cost);
-        setPurchasedItems(prev => [...prev, item.name]);
-        showAlert('Ура! 🎉', `Ты купил ${item.name} для своей виртуальной комнаты!`);
+      `Купить "${item.name}" за ${item.price} 🪙?`,
+      async () => {
+        setBusyKey(item.key);
+        try {
+          await api.post('/shop/purchases', { item_key: item.key });
+          await loadRoom();
+          refreshData?.();
+          showAlert('Ура! 🎉', `Ты купил ${item.name} для своей виртуальной комнаты!`);
+        } catch (err) {
+          showAlert('Ошибка', err.message || 'Не удалось совершить покупку');
+        } finally {
+          setBusyKey(null);
+        }
       }
     );
   };
 
-  const getEmojiRepresentation = (name) => {
-    const item = shopItems.find(i => i.name === name);
-    if (item) return item.icon;
-    switch (name) {
-      case 'Обои': return '🎨';
-      case 'Коврик': return '🧹';
-      default: return '❓';
-    }
-  };
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={THEME.colors.primary} />
+        <Text style={styles.loadingText}>Загружаем комнату…</Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Домик {user.name} 🏠</Text>
         <View style={styles.coinBadge}>
-          <Text style={styles.coinText}>🪙 {localCoins}</Text>
+          <Text style={styles.coinText}>🪙 {coins}</Text>
         </View>
       </View>
+
+      {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
 
       <Text style={styles.sectionTitle}>Твоя комната</Text>
       <View style={styles.roomCanvas}>
         <View style={styles.grid}>
-          {purchasedItems.map((item, idx) => (
-            <View key={idx} style={styles.placedItem}>
-              <Text style={styles.itemEmoji}>{getEmojiRepresentation(item)}</Text>
-              <Text style={styles.itemName}>{item}</Text>
+          {(room?.purchases || []).map((purchase) => (
+            <View key={purchase.id} style={styles.placedItem}>
+              <Text style={styles.itemEmoji}>
+                {shopItems.find((item) => item.key === purchase.item_key)?.emoji || '🎁'}
+              </Text>
+              <Text style={styles.itemName}>{purchase.item_name}</Text>
             </View>
           ))}
-          {purchasedItems.length === 0 && (
-            <Text style={styles.emptyRoomText}>Здесь пусто... Купи что-нибудь в магазине!</Text>
+          {(room?.purchases || []).length === 0 && (
+            <Text style={styles.emptyRoomText}>
+              Здесь пусто... Купи что-нибудь в магазине!
+            </Text>
           )}
         </View>
       </View>
@@ -106,31 +140,47 @@ export default function KidsScreen({ user, refreshData }) {
       <Text style={styles.sectionTitle}>Магазин мебели и питомцев 🛒</Text>
       <Text style={styles.shopHint}>Зарабатывай коины, выполняя семейные задачи!</Text>
       <View style={styles.shopGrid}>
-        {shopItems.map((item, idx) => {
-          const isOwned = purchasedItems.includes(item.name);
-          const canAfford = localCoins >= item.cost;
+        {shopItems.map((item) => {
+          const isOwned = purchasedKeys.includes(item.key);
+          const canAfford = coins >= item.price;
           return (
-            <TouchableOpacity 
-              key={idx} 
+            <TouchableOpacity
+              key={item.key}
               style={[
-                styles.shopCard, 
+                styles.shopCard,
                 isOwned && styles.shopCardOwned,
-                !isOwned && !canAfford && styles.shopCardLocked
+                !isOwned && !canAfford && styles.shopCardLocked,
               ]}
               onPress={() => buyItem(item)}
+              disabled={busyKey === item.key}
             >
-              <Text style={styles.shopEmoji}>{item.icon}</Text>
+              <Text style={styles.shopEmoji}>{item.emoji}</Text>
               <Text style={styles.shopName}>{item.name}</Text>
               {isOwned ? (
                 <Text style={styles.ownedTag}>✅ Есть</Text>
               ) : (
                 <Text style={[styles.shopCost, !canAfford && styles.shopCostLocked]}>
-                  🪙 {item.cost}
+                  🪙 {item.price}
                 </Text>
               )}
             </TouchableOpacity>
           );
         })}
+      </View>
+
+      <Text style={styles.sectionTitle}>История покупок</Text>
+      <View style={styles.historyList}>
+        {(room?.purchases || []).map((purchase) => (
+          <View key={`history-${purchase.id}`} style={styles.historyRow}>
+            <Text style={styles.historyTitle}>{purchase.item_name}</Text>
+            <Text style={styles.historyMeta}>
+              −{purchase.price} 🪙 · {formatDate(purchase.created_at)}
+            </Text>
+          </View>
+        ))}
+        {(room?.purchases || []).length === 0 && (
+          <Text style={styles.emptyRoomText}>Покупок пока нет.</Text>
+        )}
       </View>
     </ScrollView>
   );
@@ -141,6 +191,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: THEME.colors.background,
     padding: THEME.spacing.md,
+  },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: THEME.colors.background,
+  },
+  loadingText: {
+    marginTop: 8,
+    color: THEME.colors.textLight,
   },
   header: {
     flexDirection: 'row',
@@ -165,6 +225,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 15,
     color: '#D97706',
+  },
+  errorText: {
+    color: THEME.colors.danger,
+    fontSize: 12,
+    marginBottom: THEME.spacing.sm,
   },
   sectionTitle: {
     fontSize: 16,
@@ -214,7 +279,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    marginBottom: THEME.spacing.xl,
+    marginBottom: THEME.spacing.md,
   },
   shopCard: {
     backgroundColor: '#FFFFFF',
@@ -256,5 +321,29 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: 'bold',
     color: THEME.colors.primary,
-  }
+  },
+  historyList: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: THEME.spacing.sm,
+    marginBottom: THEME.spacing.xl,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5EFE6',
+  },
+  historyTitle: {
+    fontSize: 12,
+    color: THEME.colors.text,
+  },
+  historyMeta: {
+    fontSize: 10,
+    color: THEME.colors.textLight,
+  },
 });

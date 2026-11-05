@@ -126,3 +126,28 @@ dmypy.json
 .expo/
 
 node_modules/
+
+# --- Project specific ---
+
+# Local SQLite databases and dumps (never commit user data)
+*.db
+*.db-journal
+*.db.bak
+*.sqlite3
+backend/data/
+
+# Local environment overrides; keep the tracked templates
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+

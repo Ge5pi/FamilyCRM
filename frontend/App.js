@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
+import { Text, TouchableOpacity } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -12,71 +12,71 @@ import KanbanScreen from './screens/KanbanScreen';
 import KidsScreen from './screens/KidsScreen';
 import LocatorScreen from './screens/LocatorScreen';
 import FinanceScreen from './screens/FinanceScreen';
+import { api, setAuthToken, setUnauthorizedHandler } from './api';
 import { THEME } from './theme';
 
 const Tab = createBottomTabNavigator();
 
-// Configuration for API backend. Change to your local IP or host.
-export const API_URL = "http://127.0.0.1:8000";
-
-// Helper Alert wrapper
-const showAlert = (title, message) => {
-  if (Platform.OS === 'web') {
-    window.alert(`${title}\n\n${message}`);
-  } else {
-    Alert.alert(title, message);
-  }
-};
-
-
+const POLL_INTERVAL_MS = 5000;
 
 // ---- Main App ----
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [familyOverview, setFamilyOverview] = useState(null);
 
-  const fetchFamilyData = async () => {
-    if (!currentUser || !currentUser.family_id) return;
-    try {
-      const res = await fetch(`${API_URL}/families/${currentUser.family_id}/overview`);
-      if (res.ok) {
-        const data = await res.json();
-        setFamilyOverview(data);
-        const dbUser = data.users.find(u => u.id === currentUser.id);
-        if (dbUser) {
-          setCurrentUser(prev => ({ ...prev, ...dbUser }));
-        }
-      }
-    } catch (err) {
-      console.warn("Could not connect to backend, running with offline/mock data", err);
-    }
-  };
-
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
+    setAuthToken(null);
     setCurrentUser(null);
     setFamilyOverview(null);
-  };
+  }, []);
+
+  const fetchFamilyData = useCallback(async () => {
+    const familyId = currentUser?.family_id;
+    if (!familyId) return;
+    try {
+      const data = await api.get(`/families/${familyId}/overview`);
+      setFamilyOverview(data);
+      const dbUser = data.users.find((member) => member.id === currentUser.id);
+      if (dbUser) {
+        setCurrentUser((prev) => (prev ? { ...prev, ...dbUser } : prev));
+      }
+    } catch (err) {
+      // A 401 already triggers the global unauthorized handler (logout).
+      if (err.status !== 401) {
+        console.warn('Не удалось обновить данные семьи:', err.message);
+      }
+    }
+  }, [currentUser?.family_id, currentUser?.id]);
+
+  // Any 401 from the API means the token is no longer valid: sign out.
+  useEffect(() => {
+    setUnauthorizedHandler(handleLogout);
+    return () => setUnauthorizedHandler(null);
+  }, [handleLogout]);
 
   useEffect(() => {
-    if (currentUser && currentUser.family_id) {
-      fetchFamilyData();
-      const interval = setInterval(fetchFamilyData, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [currentUser?.family_id]);
+    if (!currentUser?.family_id) return undefined;
+    fetchFamilyData();
+    const interval = setInterval(fetchFamilyData, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [currentUser?.family_id, fetchFamilyData]);
+
+  const handleLoginSuccess = (auth) => {
+    setAuthToken(auth?.access_token);
+    setCurrentUser(auth);
+  };
 
   // Step 1: Not logged in -> show Auth
   if (!currentUser) {
     return (
       <SafeAreaProvider>
-        <AuthScreen onLoginSuccess={(user) => setCurrentUser(user)} />
+        <AuthScreen onLoginSuccess={handleLoginSuccess} />
         <StatusBar style="dark" />
       </SafeAreaProvider>
     );
   }
 
-
-  // Step 3: Fully set up -> show main app
+  // Step 2: Fully set up -> show main app
   return (
     <SafeAreaProvider>
       <NavigationContainer>
@@ -94,6 +94,7 @@ export default function App() {
               } else if (route.name === 'Финансы') {
                 return <DollarSign color={color} size={size} />;
               }
+              return null;
             },
             tabBarActiveTintColor: THEME.colors.primary,
             tabBarInactiveTintColor: THEME.colors.textLight,

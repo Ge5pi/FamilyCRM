@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
+import { api } from '../api';
 
 export default function FinanceScreen({ user, data, refreshData }) {
   const [title, setTitle] = useState('');
@@ -18,26 +18,30 @@ export default function FinanceScreen({ user, data, refreshData }) {
     }
   };
 
-  const expenses = data?.expenses || [
-    { id: 1, title: 'Супермаркет Магнит', amount: 1540, category: 'Продукты', date: '2026-07-03T12:00:00' },
-    { id: 2, title: 'Квартплата', amount: 4500, category: 'Коммунальные', date: '2026-07-03T10:00:00' },
-    { id: 3, title: 'Кинотеатр', amount: 800, category: 'Развлечения', date: '2026-07-02T19:00:00' },
-  ];
+  // Cross-platform Confirm wrapper
+  const showConfirm = (title, message, onConfirm) => {
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${title}\n\n${message}`)) onConfirm();
+    } else {
+      Alert.alert(title, message, [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'ОК', onPress: onConfirm, style: 'destructive' },
+      ]);
+    }
+  };
+
+  const expenses = data?.expenses || [];
 
   const fetchSummary = async () => {
+    if (!user?.family_id) return;
     try {
-      const res = await fetch(`${API_URL}/families/${user.family_id || 1}/expenses/summary`);
-      if (res.ok) {
-        const sumData = await res.json();
-        setSummary(sumData);
-      }
+      const sumData = await api.get(
+        `/families/${user.family_id}/expenses/summary`
+      );
+      setSummary(sumData || {});
     } catch (err) {
-      // Setup offline visual summary fallback from local state
-      const localSum = {};
-      expenses.forEach(e => {
-        localSum[e.category] = (localSum[e.category] || 0) + e.amount;
-      });
-      setSummary(localSum);
+      // Keep the last known summary; the next poll will retry.
+      console.warn('Не удалось загрузить сводку расходов:', err.message);
     }
   };
 
@@ -60,22 +64,31 @@ export default function FinanceScreen({ user, data, refreshData }) {
     };
 
     try {
-      const res = await fetch(`${API_URL}/expenses`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newExpense),
-      });
-
-      if (res.ok) {
-        setTitle('');
-        setAmount('');
-        showAlert('Успешно', 'Расход добавлен!');
-        refreshData();
-        fetchSummary();
-      }
+      await api.post('/expenses', newExpense);
+      setTitle('');
+      setAmount('');
+      showAlert('Успешно', 'Расход добавлен!');
+      refreshData();
+      fetchSummary();
     } catch (err) {
-      showAlert('Успешно', 'Расход сохранен в автономном режиме');
+      showAlert('Ошибка', err.message || 'Не удалось добавить расход');
     }
+  };
+
+  const handleDeleteExpense = (expense) => {
+    showConfirm(
+      'Удалить расход?',
+      `Удалить "${expense.title}" на ${expense.amount} ₽?`,
+      async () => {
+        try {
+          await api.delete(`/expenses/${expense.id}`);
+          refreshData();
+          fetchSummary();
+        } catch (err) {
+          showAlert('Ошибка', err.message || 'Не удалось удалить расход');
+        }
+      }
+    );
   };
 
   const getCategoryColor = (cat) => {
@@ -152,15 +165,20 @@ export default function FinanceScreen({ user, data, refreshData }) {
       </View>
 
       <Text style={styles.listTitle}>История операций</Text>
+      <Text style={styles.listHint}>Удерживайте запись, чтобы удалить её</Text>
       <View style={styles.listContainer}>
         {expenses.map((exp) => (
-          <View key={exp.id} style={styles.expenseItem}>
+          <TouchableOpacity
+            key={exp.id}
+            style={styles.expenseItem}
+            onLongPress={() => handleDeleteExpense(exp)}
+          >
             <View style={styles.expenseInfo}>
               <Text style={styles.expenseTextTitle}>{exp.title}</Text>
               <Text style={styles.expenseCatTag}>{exp.category}</Text>
             </View>
             <Text style={styles.expenseValue}>- {exp.amount} ₽</Text>
-          </View>
+          </TouchableOpacity>
         ))}
       </View>
     </ScrollView>
@@ -287,6 +305,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: THEME.colors.text,
     marginVertical: THEME.spacing.sm,
+  },
+  listHint: {
+    fontSize: 10,
+    color: THEME.colors.textLight,
+    fontStyle: 'italic',
+    marginBottom: 4,
   },
   listContainer: {
     marginBottom: THEME.spacing.xl,

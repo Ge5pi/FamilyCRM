@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
+import { api } from '../api';
 
 export default function AuthScreen({ onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
@@ -12,6 +12,7 @@ export default function AuthScreen({ onLoginSuccess }) {
   const [familyChoice, setFamilyChoice] = useState('create'); // 'create' or 'join'
   const [createFamilyName, setCreateFamilyName] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -27,48 +28,31 @@ export default function AuthScreen({ onLoginSuccess }) {
       showAlert('Ошибка', 'Пожалуйста, заполните все поля');
       return;
     }
+    if (submitting) return;
 
-    const endpoint = isRegister ? '/auth/register' : '/auth/login';
-    const payload = isRegister 
-      ? { 
-          email, 
-          password, 
-          name, 
+    const payload = isRegister
+      ? {
+          email,
+          password,
+          name,
           role,
-          ...(familyChoice === 'create' && createFamilyName ? { create_family_name: createFamilyName } : {}),
-          ...(familyChoice === 'join' && joinCode ? { join_code: joinCode } : {})
+          ...(familyChoice === 'create' && createFamilyName
+            ? { create_family_name: createFamilyName }
+            : {}),
+          ...(familyChoice === 'join' && joinCode ? { join_code: joinCode } : {}),
         }
       : { email, password };
 
+    setSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok) {
-        const user = await res.json();
-        showAlert('Успех', isRegister ? 'Регистрация успешна!' : 'С возвращением!');
-        onLoginSuccess(user);
-      } else {
-        const err = await res.json();
-        showAlert('Ошибка', err.detail || 'Не удалось выполнить действие');
-      }
-    } catch (e) {
-      // Local demo fallback if backend is offline
-      showAlert(
-        'Офлайн режим',
-        'Вход выполнен в демонстрационном режиме (без сервера)'
-      );
-      onLoginSuccess({
-        id: 99,
-        name: name || 'Демо Пользователь',
-        role: role,
-        email: email,
-        coins: 100,
-        family_id: 1,
-      });
+      const auth = isRegister
+        ? await api.register(payload)
+        : await api.login(payload);
+      onLoginSuccess(auth);
+    } catch (err) {
+      showAlert('Ошибка', err.message || 'Не удалось выполнить действие');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -163,9 +147,13 @@ export default function AuthScreen({ onLoginSuccess }) {
           </>
         )}
 
-        <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit}>
+        <TouchableOpacity
+          style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
+          onPress={handleSubmit}
+          disabled={submitting}
+        >
           <Text style={styles.submitBtnText}>
-            {isRegister ? 'Зарегистрироваться' : 'Войти'}
+            {submitting ? 'Подождите…' : (isRegister ? 'Зарегистрироваться' : 'Войти')}
           </Text>
         </TouchableOpacity>
 
@@ -294,6 +282,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 15,
+  },
+  submitBtnDisabled: {
+    opacity: 0.6,
   },
   toggleBtn: {
     alignItems: 'center',

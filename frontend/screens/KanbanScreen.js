@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
+import { api } from '../api';
 
 export default function KanbanScreen({ user, data, refreshData }) {
   const [taskTitle, setTaskTitle] = useState('');
@@ -10,11 +10,7 @@ export default function KanbanScreen({ user, data, refreshData }) {
   
   const members = data?.users || [];
 
-  const tasks = data?.tasks || [
-    { id: 1, title: 'Убрать игрушки в комнате', reward_coins: 15, status: 'TODO', assigned_to_id: 1 },
-    { id: 2, title: 'Выгулять собаку', reward_coins: 10, status: 'IN_PROGRESS', assigned_to_id: 1 },
-    { id: 3, title: 'Сделать домашнюю работу', reward_coins: 20, status: 'DONE', assigned_to_id: 1 },
-  ];
+  const tasks = data?.tasks || [];
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -60,20 +56,13 @@ export default function KanbanScreen({ user, data, refreshData }) {
     };
 
     try {
-      const res = await fetch(`${API_URL}/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTask),
-      });
-
-      if (res.ok) {
-        setTaskTitle('');
-        setAssignToId(null);
-        refreshData();
-        showAlert('Создано', 'Задача добавлена в Kanban-доску!');
-      }
+      await api.post('/tasks', newTask);
+      setTaskTitle('');
+      setAssignToId(null);
+      refreshData();
+      showAlert('Создано', 'Задача добавлена в Kanban-доску!');
     } catch (err) {
-      showAlert('Офлайн режим', 'Задача создана локально (сервер не доступен)');
+      showAlert('Ошибка', err.message || 'Не удалось создать задачу');
     }
   };
 
@@ -84,20 +73,13 @@ export default function KanbanScreen({ user, data, refreshData }) {
     else return;
 
     try {
-      const res = await fetch(`${API_URL}/tasks/${taskId}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: nextStatus }),
-      });
-
-      if (res.ok) {
-        refreshData();
-        if (nextStatus === 'DONE') {
-          showAlert('Ура! 🎉', 'Задание выполнено! Коины начислены.');
-        }
+      await api.put(`/tasks/${taskId}/status`, { status: nextStatus });
+      refreshData();
+      if (nextStatus === 'DONE') {
+        showAlert('Ура! 🎉', 'Задание выполнено! Коины начислены.');
       }
     } catch (err) {
-      showAlert('Ошибка', 'Не удалось обновить статус задачи');
+      showAlert('Ошибка', err.message || 'Не удалось обновить статус задачи');
     }
   };
 
@@ -107,10 +89,10 @@ export default function KanbanScreen({ user, data, refreshData }) {
       `Удалить "${taskTitle}"?`,
       async () => {
         try {
-          await fetch(`${API_URL}/tasks/${taskId}`, { method: 'DELETE' });
+          await api.delete(`/tasks/${taskId}`);
           refreshData();
         } catch (err) {
-          showAlert('Ошибка', 'Не удалось удалить задачу');
+          showAlert('Ошибка', err.message || 'Не удалось удалить задачу');
         }
       }
     );

@@ -1,7 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
+import { api } from '../api';
+import {
+  RECURRENCE_OPTIONS,
+  eventOccursOn,
+  formatTime,
+  isoWeekday,
+  recurrenceLabel,
+  toLocalDateKey,
+  toUtcIso,
+} from '../datetime';
 
 export default function CalendarScreen({ user, data, refreshData }) {
   const [selectedUser, setSelectedUser] = useState(user);
@@ -10,7 +19,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
   const [category, setCategory] = useState('School');
   const [startTime, setStartTime] = useState('10:00');
   const [endTime, setEndTime] = useState('11:30');
-  const [isRecurring, setIsRecurring] = useState(false); // Recurring Daily vs One-off
+  const [recurrence, setRecurrence] = useState('none');
   const [errorMsg, setErrorMsg] = useState('');
 
   // Sync selectedUser if the currentUser is loaded/updated
@@ -42,19 +51,12 @@ export default function CalendarScreen({ user, data, refreshData }) {
     }
   };
 
-  // Fallback lists if backend offline
-  const members = data?.users || [
-    { id: 1, name: 'Даня', role: 'Child', coins: 120, family_id: 1 },
-    { id: 2, name: 'Мама Ольга', role: 'Parent', coins: 40, family_id: 1 },
-    { id: 3, name: 'Папа Сергей', role: 'Parent', coins: 90, family_id: 1 },
-  ];
+  // Family members come from the API; empty until the first successful load.
+  const members = data?.users || [];
 
-  const events = data?.events || [
-    { id: 1, title: 'Школа (Математика)', start_time: '2026-07-03T10:00:00', end_time: '2026-07-03T11:30:00', category: 'School', is_recurring: true, user_id: 1 },
-    { id: 2, title: 'Ужин семьи', start_time: '2026-07-03T19:00:00', end_time: '2026-07-03T20:00:00', category: 'Routine', is_recurring: false, user_id: 2 },
-  ];
+  const events = data?.events || [];
 
-  // Generate day options (today + 6 upcoming days)
+  // Generate day options (today + 6 upcoming days) using the *local* date.
   const getDayOptions = () => {
     const days = [];
     const weekdays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
@@ -65,7 +67,8 @@ export default function CalendarScreen({ user, data, refreshData }) {
         offset: i,
         dayNum: d.getDate(),
         dayName: weekdays[d.getDay()],
-        dateString: d.toISOString().split('T')[0],
+        dateString: toLocalDateKey(d),
+        date: d,
       });
     }
     return days;
@@ -74,18 +77,11 @@ export default function CalendarScreen({ user, data, refreshData }) {
   const dayOptions = getDayOptions();
   const activeDay = dayOptions[selectedDayOffset];
 
-  // Filter events based on:
-  // 1. Belonging to the selected user
-  // 2. Either it is a recurring event (active every day) OR it is scheduled on this specific date.
-  const filteredEvents = events.filter(evt => {
-    const belongsToUser = evt.user_id === selectedUser.id;
-    if (!belongsToUser) return false;
-    
-    if (evt.is_recurring) return true; // Daily event
-    
-    const eventDate = evt.start_time.split('T')[0];
-    return eventDate === activeDay.dateString;
-  });
+  // Show events belonging to the selected member that occur on the active day
+  // (including every occurrence of a recurring series).
+  const filteredEvents = events.filter(
+    (evt) => evt.user_id === selectedUser.id && eventOccursOn(evt, activeDay.date)
+  );
 
   const handleAddEvent = async () => {
     if (!title) {
@@ -96,34 +92,34 @@ export default function CalendarScreen({ user, data, refreshData }) {
     const newEvent = {
       title,
       description: "",
-      start_time: `${activeDay.dateString}T${startTime}:00`,
-      end_time: `${activeDay.dateString}T${endTime}:00`,
+      start_time: toUtcIso(activeDay.dateString, startTime),
+      end_time: toUtcIso(activeDay.dateString, endTime),
       category,
-      is_recurring: isRecurring,
+      recurrence,
+      recurrence_day:
+        recurrence === 'weekly'
+          ? isoWeekday(activeDay.date)
+          : recurrence === 'monthly'
+          ? activeDay.date.getDate()
+          : null,
       user_id: user.id,
-      family_id: user.family_id || 1,
+      family_id: user.family_id,
     };
 
-    try {
-      const res = await fetch(`${API_URL}/events`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newEvent),
-      });
+    if (newEvent.end_time <= newEvent.start_time) {
+      setErrorMsg('Время окончания должно быть позже времени начала');
+      return;
+    }
 
-      if (res.ok) {
-        setTitle('');
-        setErrorMsg('');
-        setIsRecurring(false);
-        showAlert('Успешно', 'Событие сохранено!');
-        refreshData();
-      } else {
-        const err = await res.json();
-        setErrorMsg(err.detail || 'Не удалось сохранить событие');
-      }
+    try {
+      await api.post('/events', newEvent);
+      setTitle('');
+      setErrorMsg('');
+      setRecurrence('none');
+      showAlert('Успешно', 'Событие сохранено!');
+      refreshData();
     } catch (err) {
-      // Offline fallback simulations
-      showAlert('Офлайн режим', 'Событие добавлено локально');
+      setErrorMsg(err.message || 'Не удалось сохранить событие');
     }
   };
 
@@ -144,12 +140,10 @@ export default function CalendarScreen({ user, data, refreshData }) {
       `Вы уверены, что хотите удалить "${eventTitle}"?`,
       async () => {
         try {
-          const res = await fetch(`${API_URL}/events/${eventId}`, { method: 'DELETE' });
-          if (res.ok || res.status === 204) {
-            refreshData();
-          }
+          await api.delete(`/events/${eventId}`);
+          refreshData();
         } catch (err) {
-          showAlert('Ошибка', 'Не удалось удалить событие');
+          showAlert('Ошибка', err.message || 'Не удалось удалить событие');
         }
       }
     );
@@ -224,15 +218,18 @@ export default function CalendarScreen({ user, data, refreshData }) {
       
       <View style={styles.calendarContainer}>
         {filteredEvents.map((evt) => {
-          const sTime = evt.start_time.split('T')[1]?.substring(0, 5) || evt.start_time;
-          const eTime = evt.end_time.split('T')[1]?.substring(0, 5) || evt.end_time;
+          const sTime = formatTime(evt.start_time);
+          const eTime = formatTime(evt.end_time);
           const canDelete = isSelf && evt.user_id === user.id;
+          const recurrenceTag = recurrenceLabel(evt.recurrence);
           return (
             <View key={evt.id} style={[styles.eventCard, { backgroundColor: getCategoryColor(evt.category) }]}>
               <View style={styles.eventInfoRow}>
                 <Text style={styles.eventTime}>{sTime} - {eTime}</Text>
                 <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                  {evt.is_recurring && <Text style={styles.recurringTag}>🔄 Ежедневно</Text>}
+                  {recurrenceTag ? (
+                    <Text style={styles.recurringTag}>🔄 {recurrenceTag}</Text>
+                  ) : null}
                   {canDelete && (
                     <TouchableOpacity 
                       style={styles.deleteBtn}
@@ -282,18 +279,20 @@ export default function CalendarScreen({ user, data, refreshData }) {
           {/* Recurrence Type Selector */}
           <Text style={styles.label}>Тип события:</Text>
           <View style={styles.recurrenceRow}>
-            <TouchableOpacity
-              style={[styles.recurrenceBtn, !isRecurring && styles.recurrenceBtnActive]}
-              onPress={() => setIsRecurring(false)}
-            >
-              <Text style={styles.recurrenceBtnText}>Разовое событие</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.recurrenceBtn, isRecurring && styles.recurrenceBtnActive]}
-              onPress={() => setIsRecurring(true)}
-            >
-              <Text style={styles.recurrenceBtnText}>Повторять ежедневно 🔄</Text>
-            </TouchableOpacity>
+            {RECURRENCE_OPTIONS.map((option) => {
+              const active = recurrence === option.value;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.recurrenceBtn, active && styles.recurrenceBtnActive]}
+                  onPress={() => setRecurrence(option.value)}
+                >
+                  <Text style={[styles.recurrenceBtnText, active && styles.recurrenceBtnTextActive]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
           <View style={styles.catRow}>
@@ -542,17 +541,18 @@ const styles = StyleSheet.create({
   },
   recurrenceRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     marginBottom: THEME.spacing.md,
   },
   recurrenceBtn: {
-    flex: 1,
+    flexBasis: '48%',
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: THEME.colors.border,
     borderRadius: THEME.roundness.sm,
     alignItems: 'center',
-    marginHorizontal: 2,
+    marginBottom: 6,
     backgroundColor: '#FAF8F5',
   },
   recurrenceBtnActive: {
@@ -560,9 +560,12 @@ const styles = StyleSheet.create({
     borderColor: THEME.colors.primary,
   },
   recurrenceBtnText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
     color: THEME.colors.text,
+  },
+  recurrenceBtnTextActive: {
+    color: '#FFFFFF',
   },
   catRow: {
     flexDirection: 'row',

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
-import { API_URL } from '../App';
+import { api } from '../api';
+import { formatTime } from '../datetime';
 
 export default function LocatorScreen({ user, data, refreshData }) {
   // Cross-platform Alert wrapper
@@ -13,33 +14,39 @@ export default function LocatorScreen({ user, data, refreshData }) {
     }
   };
 
-  const users = data?.users || [
-    { id: 1, name: 'Даня', role: 'Child', latitude: 55.7558, longitude: 37.6173, last_updated: '2026-07-03T18:30:00' },
-    { id: 2, name: 'Мама Ольга', role: 'Parent', latitude: 55.7522, longitude: 37.6155, last_updated: '2026-07-03T19:45:00' },
-    { id: 3, name: 'Папа Сергей', role: 'Parent', latitude: 55.7599, longitude: 37.6250, last_updated: '2026-07-03T19:58:00' },
-  ];
+  const users = data?.users || [];
 
-  const handleShareLocation = async () => {
-    const randomLat = 55.75 + (Math.random() - 0.5) * 0.05;
-    const randomLng = 37.61 + (Math.random() - 0.5) * 0.05;
-
-    try {
-      const res = await fetch(`${API_URL}/users/${user.id}/location`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          latitude: randomLat,
-          longitude: randomLng,
-        }),
-      });
-
-      if (res.ok) {
-        showAlert('Обновлено', 'Геопозиция отправлена семье!');
-        refreshData();
-      }
-    } catch (err) {
-      showAlert('Успешно', 'Координаты симулированы в офлайн режиме');
+  const handleShareLocation = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      showAlert(
+        'Геолокация недоступна',
+        'Это устройство не поддерживает определение местоположения. ' +
+          'На телефоне потребуется модуль геолокации (будет добавлен позже).'
+      );
+      return;
     }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          await api.put(`/users/${user.id}/location`, {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
+          showAlert('Обновлено', 'Геопозиция отправлена семье!');
+          refreshData();
+        } catch (err) {
+          showAlert('Ошибка', err.message || 'Не удалось отправить геопозицию');
+        }
+      },
+      (geoError) => {
+        showAlert(
+          'Геолокация недоступна',
+          geoError?.message || 'Разрешите доступ к геолокации в настройках.'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
   };
 
 
@@ -58,7 +65,7 @@ export default function LocatorScreen({ user, data, refreshData }) {
       <View style={styles.memberList}>
         {users.map((member) => {
           const hasLoc = member.latitude && member.longitude;
-          const time = member.last_updated ? member.last_updated.split('T')[1]?.substring(0, 5) : 'Неизвестно';
+          const time = member.last_updated ? formatTime(member.last_updated) : 'Неизвестно';
           return (
             <View key={member.id} style={styles.memberCard}>
               <View style={styles.avatarRow}>
