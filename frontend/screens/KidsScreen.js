@@ -57,9 +57,11 @@ export default function KidsScreen({ user, refreshData }) {
     }
   }, [user.id]);
 
+  // Reload when the profile changes or when the coin balance is updated by
+  // another screen (task completed, reward revoked, purchase).
   useEffect(() => {
     loadRoom();
-  }, [loadRoom]);
+  }, [loadRoom, user.coins]);
 
   const coins = room ? room.coins : user.coins || 0;
   const purchasedKeys = (room?.purchases || []).map((purchase) => purchase.item_key);

@@ -6,13 +6,40 @@
  * - Normalises errors into ApiError so screens can show real messages.
  */
 
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
+
 const DEFAULT_API_URL = 'http://127.0.0.1:8000';
 const REQUEST_TIMEOUT_MS = 15000;
 
-export const API_URL = (process.env.EXPO_PUBLIC_API_URL || DEFAULT_API_URL).replace(
-  /\/+$/,
-  ''
-);
+/**
+ * Resolve the backend URL.
+ *
+ * 1. EXPO_PUBLIC_API_URL always wins (see .env.example).
+ * 2. In development on a real device, derive the LAN address from the Expo
+ *    dev-server host, because 127.0.0.1 points at the phone itself.
+ * 3. Fall back to localhost (web / simulator).
+ */
+function resolveApiUrl() {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL.replace(/\/+$/, '');
+  }
+
+  if (Platform.OS !== 'web') {
+    const hostUri =
+      Constants.expoConfig?.hostUri ||
+      Constants.manifest2?.extra?.expoGo?.debuggerHost ||
+      Constants.manifest?.debuggerHost;
+    const host = typeof hostUri === 'string' ? hostUri.split(':')[0] : null;
+    if (host) {
+      return `http://${host}:8000`;
+    }
+  }
+
+  return DEFAULT_API_URL;
+}
+
+export const API_URL = resolveApiUrl();
 
 let authToken = null;
 let unauthorizedHandler = null;

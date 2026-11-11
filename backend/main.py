@@ -8,14 +8,26 @@ Datetimes are exchanged as ISO-8601 in UTC (``...Z`` / ``+00:00``); the
 database stores naive UTC values so SQLite and PostgreSQL behave identically.
 """
 
+import asyncio
 import logging
 import secrets
 import string
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+
+import jwt
 
 import models
 import schemas
@@ -35,6 +47,7 @@ from deps import (
 from recurrence import default_recurrence_day, events_overlap
 from security import (
     create_access_token,
+    decode_access_token,
     hash_password,
     password_needs_rehash,
     verify_password,
@@ -49,7 +62,58 @@ if settings.secret_key == DEV_SECRET_KEY:
         "Set a strong SECRET_KEY before deploying to production."
     )
 
-app = FastAPI(title=settings.project_name, version="1.1.0")
+class FamilyHub:
+    """Per-family WebSocket connections used for live updates."""
+
+    def __init__(self) -> None:
+        self._connections: Dict[int, set] = {}
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    async def connect(self, family_id: int, websocket: WebSocket) -> None:
+        # The endpoint accepts the handshake itself (so it can reject
+        # unauthorised clients with an application close code).
+        self._connections.setdefault(family_id, set()).add(websocket)
+
+    def disconnect(self, family_id: int, websocket: WebSocket) -> None:
+        connections = self._connections.get(family_id)
+        if not connections:
+            return
+        connections.discard(websocket)
+        if not connections:
+            self._connections.pop(family_id, None)
+
+    async def broadcast(self, family_id: int, payload: dict) -> None:
+        for websocket in list(self._connections.get(family_id, ())):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                self.disconnect(family_id, websocket)
+
+    def notify(self, family_id: Optional[int], kind: str = "update") -> None:
+        """Thread-safe notification callable from synchronous endpoints."""
+        if family_id is None or self._loop is None or self._loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast(family_id, {"type": kind}), self._loop
+            )
+        except RuntimeError:
+            logger.debug("WebSocket loop is unavailable; skipping notification")
+
+
+hub = FamilyHub()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    hub.set_loop(asyncio.get_running_loop())
+    yield
+
+
+app = FastAPI(title=settings.project_name, version="1.2.0", lifespan=lifespan)
 
 # Bearer tokens are sent in headers, so cookies/credentials are not required.
 # A wildcard origin is therefore safe for local development.
@@ -287,6 +351,7 @@ def create_family(
     db_family = create_family_for_user(db, family.name)
     current_user.family_id = db_family.id
     db.commit()
+    hub.notify(db_family.id, "family")
     return db_family
 
 
@@ -322,6 +387,7 @@ def invite_family_member(
     db_user.family_id = family_id
     db.commit()
     db.refresh(db_user)
+    hub.notify(family_id, "family")
     return db_user
 
 
@@ -386,6 +452,7 @@ def create_user(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    hub.notify(db_user.family_id, "family")
     return db_user
 
 
@@ -410,6 +477,7 @@ def join_family(
     db_user.family_id = db_family.id
     db.commit()
     db.refresh(db_user)
+    hub.notify(db_family.id, "family")
     return db_user
 
 
@@ -428,6 +496,7 @@ def update_user_location(
     db_user.last_updated = utc_now_naive()
     db.commit()
     db.refresh(db_user)
+    hub.notify(db_user.family_id, "location")
     return db_user
 
 
@@ -553,6 +622,7 @@ def purchase_shop_item(
 
     db.commit()
     db.refresh(purchase)
+    hub.notify(current_user.family_id, "room")
     return purchase
 
 
@@ -595,6 +665,7 @@ def create_event(
     db.add(candidate)
     db.commit()
     db.refresh(candidate)
+    hub.notify(candidate.family_id, "events")
     return candidate
 
 
@@ -673,6 +744,7 @@ def update_event(
 
     db.commit()
     db.refresh(db_event)
+    hub.notify(db_event.family_id, "events")
     return db_event
 
 
@@ -688,8 +760,10 @@ def delete_event(
 
     require_family_membership(current_user, db_event.family_id)
     require_owner_or_parent(current_user, db_event.user_id, "удалить")
+    family_id = db_event.family_id
     db.delete(db_event)
     db.commit()
+    hub.notify(family_id, "events")
     return None
 
 
@@ -726,6 +800,7 @@ def create_task(
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
+    hub.notify(db_task.family_id, "tasks")
     return db_task
 
 
@@ -767,6 +842,7 @@ def update_task(
 
     db.commit()
     db.refresh(db_task)
+    hub.notify(db_task.family_id, "tasks")
     return db_task
 
 
@@ -818,6 +894,7 @@ def update_task_status(
 
     db.commit()
     db.refresh(db_task)
+    hub.notify(db_task.family_id, "tasks")
     return db_task
 
 
@@ -833,8 +910,10 @@ def delete_task(
 
     require_family_membership(current_user, db_task.family_id)
     require_owner_or_parent(current_user, db_task.created_by_id, "удалить")
+    family_id = db_task.family_id
     db.delete(db_task)
     db.commit()
+    hub.notify(family_id, "tasks")
     return None
 
 
@@ -872,6 +951,7 @@ def create_expense(
     db.add(db_expense)
     db.commit()
     db.refresh(db_expense)
+    hub.notify(db_expense.family_id, "expenses")
     return db_expense
 
 
@@ -908,6 +988,7 @@ def update_expense(
 
     db.commit()
     db.refresh(db_expense)
+    hub.notify(db_expense.family_id, "expenses")
     return db_expense
 
 
@@ -923,8 +1004,10 @@ def delete_expense(
 
     require_family_membership(current_user, db_expense.family_id)
     require_owner_or_parent(current_user, db_expense.user_id, "удалить")
+    family_id = db_expense.family_id
     db.delete(db_expense)
     db.commit()
+    hub.notify(family_id, "expenses")
     return None
 
 
@@ -940,3 +1023,44 @@ def get_family_expenses_summary(
     for exp in expenses:
         summary[exp.category] = summary.get(exp.category, 0.0) + exp.amount
     return summary
+
+
+# --- Live updates (WebSocket) ---
+@app.websocket("/ws/families/{family_id}")
+async def family_updates(
+    websocket: WebSocket,
+    family_id: int,
+    token: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    """Push a short notification whenever family data changes.
+
+    The access token is passed as a query parameter because the native
+    WebSocket API cannot attach an ``Authorization`` header.
+    """
+    await websocket.accept()
+
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload["sub"])
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError):
+        await websocket.close(code=4401)
+        return
+
+    user = db.get(models.User, user_id)
+    authorized = user is not None and user.family_id == family_id
+    # Release the database connection before the long-lived receive loop.
+    db.close()
+
+    if not authorized:
+        await websocket.close(code=4403)
+        return
+
+    await hub.connect(family_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        hub.disconnect(family_id, websocket)

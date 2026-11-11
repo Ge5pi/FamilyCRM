@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { Text, TouchableOpacity } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -13,14 +13,19 @@ import KidsScreen from './screens/KidsScreen';
 import LocatorScreen from './screens/LocatorScreen';
 import FinanceScreen from './screens/FinanceScreen';
 import { api, setAuthToken, setUnauthorizedHandler } from './api';
+import { clearToken, loadToken, saveToken } from './storage';
+import useFamilyRealtime from './useFamilyRealtime';
 import { THEME } from './theme';
 
 const Tab = createBottomTabNavigator();
 
-const POLL_INTERVAL_MS = 5000;
+// WebSocket delivers updates instantly; polling is only a safety net
+// (e.g. a missed message while the app was in the background).
+const POLL_INTERVAL_MS = 30000;
 
 // ---- Main App ----
 export default function App() {
+  const [booting, setBooting] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [familyOverview, setFamilyOverview] = useState(null);
 
@@ -28,6 +33,7 @@ export default function App() {
     setAuthToken(null);
     setCurrentUser(null);
     setFamilyOverview(null);
+    clearToken().catch(() => {});
   }, []);
 
   const fetchFamilyData = useCallback(async () => {
@@ -48,11 +54,40 @@ export default function App() {
     }
   }, [currentUser?.family_id, currentUser?.id]);
 
+  // Restore the saved session on app launch.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const token = await loadToken();
+        if (!token) return;
+        setAuthToken(token);
+        const me = await api.me();
+        if (!cancelled) {
+          setCurrentUser({ ...me, access_token: token });
+        }
+      } catch (err) {
+        setAuthToken(null);
+        await clearToken();
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Any 401 from the API means the token is no longer valid: sign out.
   useEffect(() => {
     setUnauthorizedHandler(handleLogout);
     return () => setUnauthorizedHandler(null);
   }, [handleLogout]);
+
+  // Live updates + slow polling fallback.
+  useFamilyRealtime(currentUser?.family_id, fetchFamilyData);
 
   useEffect(() => {
     if (!currentUser?.family_id) return undefined;
@@ -63,8 +98,22 @@ export default function App() {
 
   const handleLoginSuccess = (auth) => {
     setAuthToken(auth?.access_token);
+    saveToken(auth?.access_token).catch(() => {});
     setCurrentUser(auth);
   };
+
+  // Step 0: restoring the session
+  if (booting) {
+    return (
+      <SafeAreaProvider>
+        <View style={styles.splash}>
+          <Text style={styles.splashTitle}>FamilyCRM 🏠</Text>
+          <ActivityIndicator size="large" color={THEME.colors.primary} />
+        </View>
+        <StatusBar style="dark" />
+      </SafeAreaProvider>
+    );
+  }
 
   // Step 1: Not logged in -> show Auth
   if (!currentUser) {
@@ -144,3 +193,18 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  splash: {
+    flex: 1,
+    backgroundColor: THEME.colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  splashTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: THEME.colors.text,
+    marginBottom: 20,
+  },
+});

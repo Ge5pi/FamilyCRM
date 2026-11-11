@@ -11,6 +11,7 @@ import {
   toLocalDateKey,
   toUtcIso,
 } from '../datetime';
+import EventEditModal from '../components/EventEditModal';
 
 export default function CalendarScreen({ user, data, refreshData }) {
   const [selectedUser, setSelectedUser] = useState(user);
@@ -20,6 +21,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
   const [startTime, setStartTime] = useState('10:00');
   const [endTime, setEndTime] = useState('11:30');
   const [recurrence, setRecurrence] = useState('none');
+  const [editingEvent, setEditingEvent] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
   // Sync selectedUser if the currentUser is loaded/updated
@@ -220,17 +222,25 @@ export default function CalendarScreen({ user, data, refreshData }) {
         {filteredEvents.map((evt) => {
           const sTime = formatTime(evt.start_time);
           const eTime = formatTime(evt.end_time);
-          const canDelete = isSelf && evt.user_id === user.id;
+          const isOwner = evt.user_id === user.id;
+          const canEdit = isOwner || user.role === 'Parent';
           const recurrenceTag = recurrenceLabel(evt.recurrence);
           return (
-            <View key={evt.id} style={[styles.eventCard, { backgroundColor: getCategoryColor(evt.category) }]}>
+            <TouchableOpacity
+              key={evt.id}
+              activeOpacity={canEdit ? 0.7 : 1}
+              onPress={() => {
+                if (canEdit) setEditingEvent(evt);
+              }}
+              style={[styles.eventCard, { backgroundColor: getCategoryColor(evt.category) }]}
+            >
               <View style={styles.eventInfoRow}>
                 <Text style={styles.eventTime}>{sTime} - {eTime}</Text>
                 <View style={{flexDirection: 'row', alignItems: 'center'}}>
                   {recurrenceTag ? (
                     <Text style={styles.recurringTag}>🔄 {recurrenceTag}</Text>
                   ) : null}
-                  {canDelete && (
+                  {isOwner && (
                     <TouchableOpacity 
                       style={styles.deleteBtn}
                       onPress={() => handleDeleteEvent(evt.id, evt.title)}
@@ -242,7 +252,10 @@ export default function CalendarScreen({ user, data, refreshData }) {
               </View>
               <Text style={styles.eventTitle}>{evt.title}</Text>
               <Text style={styles.eventCat}>{evt.category}</Text>
-            </View>
+              {canEdit ? (
+                <Text style={styles.editHint}>✏️ Нажмите, чтобы изменить</Text>
+              ) : null}
+            </TouchableOpacity>
           );
         })}
         {filteredEvents.length === 0 && (
@@ -319,6 +332,13 @@ export default function CalendarScreen({ user, data, refreshData }) {
           <Text style={styles.readOnlyText}>Вы просматриваете календарь {selectedUser.name}. Изменения может вносить только владелец.</Text>
         </View>
       )}
+
+      <EventEditModal
+        visible={!!editingEvent}
+        event={editingEvent}
+        onClose={() => setEditingEvent(null)}
+        onSaved={refreshData}
+      />
     </ScrollView>
   );
 }
@@ -496,6 +516,12 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
     marginTop: 6,
+  },
+  editHint: {
+    fontSize: 9,
+    color: THEME.colors.textLight,
+    marginTop: 6,
+    fontStyle: 'italic',
   },
   noEvents: {
     textAlign: 'center',

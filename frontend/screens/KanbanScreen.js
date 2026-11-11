@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
 import { api } from '../api';
+import TaskEditModal from '../components/TaskEditModal';
 
 export default function KanbanScreen({ user, data, refreshData }) {
   const [taskTitle, setTaskTitle] = useState('');
   const [rewardCoins, setRewardCoins] = useState('10');
   const [assignToId, setAssignToId] = useState(null); // null = pick in selector
+  const [editingTask, setEditingTask] = useState(null);
   
   const members = data?.users || [];
 
@@ -18,19 +20,6 @@ export default function KanbanScreen({ user, data, refreshData }) {
       window.alert(`${title}\n\n${message}`);
     } else {
       Alert.alert(title, message);
-    }
-  };
-
-  // Cross-platform Confirm wrapper
-  const showConfirm = (title, message, onConfirm) => {
-    if (Platform.OS === 'web') {
-      const confirmed = window.confirm(`${title}\n\n${message}`);
-      if (confirmed) onConfirm();
-    } else {
-      Alert.alert(title, message, [
-        { text: 'Отмена', style: 'cancel' },
-        { text: 'ОК', onPress: onConfirm, style: 'destructive' }
-      ]);
     }
   };
 
@@ -83,21 +72,6 @@ export default function KanbanScreen({ user, data, refreshData }) {
     }
   };
 
-  const handleDeleteTask = async (taskId, taskTitle) => {
-    showConfirm(
-      'Удалить задачу?',
-      `Удалить "${taskTitle}"?`,
-      async () => {
-        try {
-          await api.delete(`/tasks/${taskId}`);
-          refreshData();
-        } catch (err) {
-          showAlert('Ошибка', err.message || 'Не удалось удалить задачу');
-        }
-      }
-    );
-  };
-
   const renderColumn = (title, statusName, bgColor) => {
     const colTasks = tasks.filter(t => t.status === statusName);
     return (
@@ -109,7 +83,17 @@ export default function KanbanScreen({ user, data, refreshData }) {
               key={t.id} 
               style={styles.taskCard}
               onPress={() => handleMoveStatus(t.id, t.status)}
-              onLongPress={() => handleDeleteTask(t.id, t.title)}
+              onLongPress={() => {
+                const canEdit = user.role === 'Parent' || t.created_by_id === user.id;
+                if (canEdit) {
+                  setEditingTask(t);
+                } else {
+                  showAlert(
+                    'Нет прав',
+                    'Редактировать задачу может её автор или родитель'
+                  );
+                }
+              }}
             >
               <Text style={styles.taskTitle}>{t.title}</Text>
               {t.assigned_to_id && (
@@ -192,8 +176,18 @@ export default function KanbanScreen({ user, data, refreshData }) {
         <TouchableOpacity style={styles.addBtn} onPress={handleCreateTask}>
           <Text style={styles.addBtnText}>Создать задачу</Text>
         </TouchableOpacity>
-        <Text style={styles.hintText}>Удерживайте карточку задачи, чтобы удалить её</Text>
+        <Text style={styles.hintText}>
+          Коснитесь карточки, чтобы сменить статус. Удерживайте — чтобы редактировать.
+        </Text>
       </View>
+
+      <TaskEditModal
+        visible={!!editingTask}
+        task={editingTask}
+        members={members}
+        onClose={() => setEditingTask(null)}
+        onSaved={refreshData}
+      />
     </View>
   );
 }

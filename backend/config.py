@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Insecure placeholder used only for local development. It must never be used
 # in production: the application refuses to start with it when ENVIRONMENT=production.
-DEV_SECRET_KEY = "dev-insecure-secret-change-me"
+DEV_SECRET_KEY = "dev-insecure-secret-change-me-please-override"
 MIN_SECRET_KEY_LENGTH = 32
 
 

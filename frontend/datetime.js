@@ -106,3 +106,12 @@ export function recurrenceLabel(recurrence) {
       return '';
   }
 }
+
+/** HH:MM in local time, suitable for a text input. */
+export function formatTimeInput(value) {
+  const date = parseApiDate(value);
+  if (!date) return '09:00';
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}

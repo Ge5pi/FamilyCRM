@@ -2,14 +2,24 @@
   "expo": {
     "name": "FamilyCRM",
     "slug": "family-crm",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.familycrm.app"
+    },
+    "android": {
+      "package": "com.familycrm.app"
     },
     "plugins": [
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "FamilyCRM использует геолокацию, чтобы показывать ваше местоположение только членам семьи."
+        }
+      ]
     ]
   }
 }

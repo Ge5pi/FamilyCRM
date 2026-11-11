@@ -1,10 +1,24 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import * as Location from 'expo-location';
+
 import { THEME } from '../theme';
 import { api } from '../api';
 import { formatTime } from '../datetime';
+import FamilyMap from '../components/FamilyMap';
 
 export default function LocatorScreen({ user, data, refreshData }) {
+  const [busy, setBusy] = useState(false);
+
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
     if (Platform.OS === 'web') {
@@ -16,37 +30,51 @@ export default function LocatorScreen({ user, data, refreshData }) {
 
   const users = data?.users || [];
 
-  const handleShareLocation = () => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      showAlert(
-        'Геолокация недоступна',
-        'Это устройство не поддерживает определение местоположения. ' +
-          'На телефоне потребуется модуль геолокации (будет добавлен позже).'
-      );
-      return;
+  const getCurrentPosition = () => {
+    if (Platform.OS === 'web') {
+      return new Promise((resolve, reject) => {
+        if (typeof navigator === 'undefined' || !navigator.geolocation) {
+          reject(new Error('Браузер не поддерживает геолокацию'));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000,
+        });
+      });
     }
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          await api.put(`/users/${user.id}/location`, {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-          showAlert('Обновлено', 'Геопозиция отправлена семье!');
-          refreshData();
-        } catch (err) {
-          showAlert('Ошибка', err.message || 'Не удалось отправить геопозицию');
-        }
-      },
-      (geoError) => {
-        showAlert(
-          'Геолокация недоступна',
-          geoError?.message || 'Разрешите доступ к геолокации в настройках.'
-        );
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-    );
+    return (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        throw new Error('Разрешите доступ к геолокации в настройках устройства');
+      }
+      return Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+    })();
+  };
+
+  const handleShareLocation = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const position = await getCurrentPosition();
+      await api.put(`/users/${user.id}/location`, {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      });
+      showAlert('Обновлено', 'Геопозиция отправлена семье!');
+      refreshData();
+    } catch (err) {
+      showAlert(
+        'Геолокация недоступна',
+        err.message || 'Не удалось получить координаты'
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
 
@@ -56,11 +84,7 @@ export default function LocatorScreen({ user, data, refreshData }) {
         <Text style={styles.subtitle}>Текущая геопозиция членов семьи</Text>
       </View>
 
-      <View style={styles.mapMock}>
-        <Text style={styles.mapIcon}>🗺️</Text>
-        <Text style={styles.mapText}>Интерактивная карта (В платной подписке)</Text>
-        <Text style={styles.mapHint}>Смотрите историю перемещений и настраивайте геозоны (школа, дом).</Text>
-      </View>
+      <FamilyMap members={users} currentUserId={user.id} />
 
       <View style={styles.memberList}>
         {users.map((member) => {
@@ -101,8 +125,16 @@ export default function LocatorScreen({ user, data, refreshData }) {
         </Text>
       </View>
 
-      <TouchableOpacity style={styles.shareBtn} onPress={handleShareLocation}>
-        <Text style={styles.shareBtnText}>Отправить мою геопозицию семье</Text>
+      <TouchableOpacity
+        style={[styles.shareBtn, busy && styles.shareBtnDisabled]}
+        onPress={handleShareLocation}
+        disabled={busy}
+      >
+        {busy ? (
+          <ActivityIndicator color="#FFFFFF" />
+        ) : (
+          <Text style={styles.shareBtnText}>Отправить мою геопозицию семье</Text>
+        )}
       </TouchableOpacity>
     </ScrollView>
   );
@@ -120,32 +152,6 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 15,
     color: THEME.colors.textLight,
-  },
-  mapMock: {
-    height: 150,
-    backgroundColor: '#FFFFFF',
-    borderRadius: THEME.roundness.md,
-    borderWidth: 1,
-    borderColor: THEME.colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: THEME.spacing.md,
-    marginBottom: THEME.spacing.md,
-  },
-  mapIcon: {
-    fontSize: 32,
-    marginBottom: 6,
-  },
-  mapText: {
-    fontWeight: 'bold',
-    fontSize: 13,
-    color: THEME.colors.text,
-  },
-  mapHint: {
-    fontSize: 10,
-    color: THEME.colors.textLight,
-    textAlign: 'center',
-    marginTop: 4,
   },
   memberList: {
     marginBottom: THEME.spacing.lg,
@@ -216,6 +222,9 @@ const styles = StyleSheet.create({
   shareBtnText: {
     color: '#FFFFFF',
     fontWeight: 'bold',
+  },
+  shareBtnDisabled: {
+    opacity: 0.7,
   },
   inviteCard: {
     backgroundColor: '#FFFFFF',
