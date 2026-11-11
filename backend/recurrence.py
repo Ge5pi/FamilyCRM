@@ -36,9 +36,13 @@ def event_occurs_on(event, day: date) -> bool:
         return False
 
     recurrence = event.recurrence or RECURRENCE_NONE
+    until = getattr(event, "recurrence_until", None)
 
     if recurrence == RECURRENCE_NONE:
         return day == start_day
+
+    if until is not None and day > until:
+        return False
 
     if recurrence == RECURRENCE_DAILY:
         return True

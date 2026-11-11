@@ -112,8 +112,10 @@ pytest -q
 | Повторения | `recurrence`: `none` / `daily` / `weekly` / `monthly`, `recurrence_day` (день недели 0–6 или день месяца 1–31) |
 | Задачи и коины | `GET/POST /tasks`, `PATCH/DELETE /tasks/{id}`, `PUT /tasks/{id}/status`, `GET /users/{id}/coins` |
 | Магазин и комната | `GET /shop/items`, `POST /shop/purchases`, `GET /users/{id}/room` |
-| Финансы | `GET/POST /expenses`, `PATCH/DELETE /expenses/{id}`, `GET /families/{id}/expenses/summary` |
+| Финансы | `GET/POST /expenses`, `PATCH/DELETE /expenses/{id}`, `GET /families/{id}/expenses/summary`; фильтры `date_from`, `date_to`, `category` |
 | Семья | `GET /families/{id}/overview`, `GET /families/{id}/members`, `POST /families/{id}/invite` |
+| Профиль | `PATCH /users/{id}` (имя, аватар), `POST /auth/change-password` |
+| Бюджеты | `GET /families/{id}/budgets`, `PUT/DELETE /families/{id}/budgets/{category}` |
 | Реалтайм | `WS /ws/families/{id}?token=<access_token>` — короткие уведомления об изменениях |
 
 **Реалтайм.** После любого изменения (событие, задача, расход, покупка,
@@ -167,6 +169,14 @@ Expo (`frontend/api.js`), поэтому телефон в той же Wi-Fi с�
   (`android.config.googleMaps.apiKey`); в Expo Go карта работает без него.
 - **Редактирование** — долгое нажатие на задачу и нажатие на событие открывают
   модальные формы (название, время, повторение, награда, исполнитель).
+- **Профиль** — отдельная вкладка: аватар (эмодзи), имя, смена пароля, код
+  приглашения и выход из аккаунта.
+- **Календарь** — переключение «Неделя / Месяц», точки на днях с событиями,
+  дата окончания повторяющейся серии.
+- **Финансы** — переключение месяцев, фильтр по категории, бюджеты по
+  категориям (задаёт родитель) с индикатором перерасхода.
+- **Роли** — создавать и назначать задачи может только родитель; ребёнок
+  двигает назначенные ему задачи по статусам.
 
 > Для работы WebSocket локальный uvicorn должен быть установлен с пакетом
 > `websockets` (он уже в `requirements.txt`).
@@ -189,6 +199,7 @@ Expo (`frontend/api.js`), поэтому телефон в той же Wi-Fi с�
 - Основной экран всё ещё использует `/families/{id}/overview`; переход на
   точечные эндпоинты — следующий шаг.
 - Геолокация обновляется по кнопке; фонового трекинга и геозон пока нет.
+- Push-уведомлений и восстановления пароля по email пока нет.
 - Для standalone Android-сборки нужен ключ Google Maps (в Expo Go карта
   работает без настройки).
 - См. [docs/ROADMAP.md](docs/ROADMAP.md).

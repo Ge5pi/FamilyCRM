@@ -11,6 +11,7 @@ export default function KanbanScreen({ user, data, refreshData }) {
   const [editingTask, setEditingTask] = useState(null);
   
   const members = data?.users || [];
+  const isParent = user.role === 'Parent';
 
   const tasks = data?.tasks || [];
 
@@ -23,10 +24,14 @@ export default function KanbanScreen({ user, data, refreshData }) {
     }
   };
 
+  const getMember = (userId) => members.find((u) => u.id === userId);
+
   const getMemberName = (userId) => {
-    const m = members.find(u => u.id === userId);
+    const m = getMember(userId);
     return m ? m.name : '—';
   };
+
+  const getMemberAvatar = (userId) => getMember(userId)?.avatar || '👤';
 
   const handleCreateTask = async () => {
     if (!taskTitle) {
@@ -97,7 +102,9 @@ export default function KanbanScreen({ user, data, refreshData }) {
             >
               <Text style={styles.taskTitle}>{t.title}</Text>
               {t.assigned_to_id && (
-                <Text style={styles.assignee}>👤 {getMemberName(t.assigned_to_id)}</Text>
+                <Text style={styles.assignee}>
+                  {getMemberAvatar(t.assigned_to_id)} {getMemberName(t.assigned_to_id)}
+                </Text>
               )}
               <View style={styles.taskFooter}>
                 <View style={styles.coinBadge}>
@@ -120,7 +127,9 @@ export default function KanbanScreen({ user, data, refreshData }) {
   return (
     <View style={styles.container}>
       <View style={styles.coinHeader}>
-        <Text style={styles.welcomeText}>Привет, {user.name}!</Text>
+        <Text style={styles.welcomeText}>
+          Привет, {user.name}! {user.avatar || ''}
+        </Text>
         <View style={styles.userCoins}>
           <Text style={styles.coinsText}>🪙 {user.coins}</Text>
         </View>
@@ -132,8 +141,9 @@ export default function KanbanScreen({ user, data, refreshData }) {
         {renderColumn('Готово ✅', 'DONE', '#E2EFDA')}
       </View>
 
-      <View style={styles.addTaskForm}>
-        <Text style={styles.formTitle}>Новая семейная задача</Text>
+      {isParent ? (
+        <View style={styles.addTaskForm}>
+          <Text style={styles.formTitle}>Новая семейная задача</Text>
         <View style={styles.formRow}>
           <TextInput
             style={[styles.input, { flex: 2, marginRight: 8 }]}
@@ -165,7 +175,7 @@ export default function KanbanScreen({ user, data, refreshData }) {
                   onPress={() => setAssignToId(m.id)}
                 >
                   <Text style={styles.assignChipText}>
-                    {m.id === user.id ? `Я (${m.name})` : m.name}
+                    {m.avatar || '👤'} {m.id === user.id ? `Я (${m.name})` : m.name}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -173,13 +183,20 @@ export default function KanbanScreen({ user, data, refreshData }) {
           </>
         )}
 
-        <TouchableOpacity style={styles.addBtn} onPress={handleCreateTask}>
-          <Text style={styles.addBtnText}>Создать задачу</Text>
-        </TouchableOpacity>
-        <Text style={styles.hintText}>
-          Коснитесь карточки, чтобы сменить статус. Удерживайте — чтобы редактировать.
-        </Text>
-      </View>
+          <TouchableOpacity style={styles.addBtn} onPress={handleCreateTask}>
+            <Text style={styles.addBtnText}>Создать задачу</Text>
+          </TouchableOpacity>
+          <Text style={styles.hintText}>
+            Коснитесь карточки, чтобы сменить статус. Удерживайте — чтобы редактировать.
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.childNotice}>
+          <Text style={styles.childNoticeText}>
+            Задачи назначает родитель. Коснитесь карточки, чтобы отметить прогресс.
+          </Text>
+        </View>
+      )}
 
       <TaskEditModal
         visible={!!editingTask}
@@ -297,6 +314,20 @@ const styles = StyleSheet.create({
     padding: THEME.spacing.md,
     borderWidth: 1,
     borderColor: THEME.colors.border,
+  },
+  childNotice: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    padding: THEME.spacing.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    alignItems: 'center',
+  },
+  childNoticeText: {
+    fontSize: 11,
+    color: THEME.colors.textLight,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
   formTitle: {
     fontSize: 14,

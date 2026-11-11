@@ -3,6 +3,7 @@ import datetime
 from sqlalchemy import (
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -56,6 +57,7 @@ class Family(Base):
     tasks = relationship("Task", back_populates="family")
     expenses = relationship("Expense", back_populates="family")
     purchases = relationship("Purchase", back_populates="family")
+    budgets = relationship("Budget", back_populates="family")
 
 
 class User(Base):
@@ -65,6 +67,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=True)
     hashed_password = Column(String, nullable=True)
     name = Column(String, nullable=False)
+    avatar = Column(String, nullable=False, default="🙂")
     role = Column(String, default=ROLE_PARENT)
     coins = Column(Integer, default=0, nullable=False)
     family_id = Column(Integer, ForeignKey("families.id"), index=True, nullable=True)
@@ -95,6 +98,8 @@ class Event(Base):
     recurrence = Column(String, nullable=False, default=RECURRENCE_NONE)
     # weekly: ISO weekday 0..6 (Mon..Sun); monthly: day of month 1..31
     recurrence_day = Column(Integer, nullable=True)
+    # Inclusive last date of the series (None = endless).
+    recurrence_until = Column(Date, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     family_id = Column(Integer, ForeignKey("families.id"), index=True, nullable=False)
 
@@ -194,3 +199,21 @@ class CoinTransaction(Base):
     user = relationship("User", back_populates="coin_transactions")
     task = relationship("Task")
     purchase = relationship("Purchase")
+
+
+class Budget(Base):
+    """Monthly spending limit for one expense category of a family."""
+
+    __tablename__ = "budgets"
+    __table_args__ = (
+        UniqueConstraint("family_id", "category", name="uq_budgets_family_category"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    family_id = Column(
+        Integer, ForeignKey("families.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    category = Column(String, nullable=False)
+    monthly_limit = Column(Float, nullable=False)
+
+    family = relationship("Family", back_populates="budgets")

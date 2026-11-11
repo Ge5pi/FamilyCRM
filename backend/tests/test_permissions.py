@@ -172,3 +172,27 @@ def test_create_family_rejected_for_shared_family(client, register, auth_headers
         headers=auth_headers(parent["access_token"]),
     )
     assert response.status_code == 400
+
+
+def test_only_parents_create_tasks(client, register, auth_headers):
+    parent = register(email="p@example.com", create_family_name="Семья")
+    overview = client.get(
+        f"/families/{parent['family_id']}/overview",
+        headers=auth_headers(parent["access_token"]),
+    ).json()
+    child = register(
+        email="c@example.com", role="Child", join_code=overview["join_code"]
+    )
+
+    response = client.post(
+        "/tasks",
+        json={
+            "title": "Сам себе задание",
+            "reward_coins": 5,
+            "status": "TODO",
+            "created_by_id": child["id"],
+            "family_id": parent["family_id"],
+        },
+        headers=auth_headers(child["access_token"]),
+    )
+    assert response.status_code == 403

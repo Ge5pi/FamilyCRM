@@ -115,3 +115,34 @@ export function formatTimeInput(value) {
   const minutes = String(date.getMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
 }
+
+export function isSameDay(a, b) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+export function startOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+/** 42 local dates (6 weeks, Monday first) covering the given month. */
+export function monthMatrix(year, monthIndex) {
+  const first = new Date(year, monthIndex, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(year, monthIndex, 1 - offset);
+  return Array.from(
+    { length: 42 },
+    (_, index) =>
+      new Date(start.getFullYear(), start.getMonth(), start.getDate() + index)
+  );
+}
+
+export function monthTitle(year, monthIndex) {
+  return new Date(year, monthIndex, 1).toLocaleDateString('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  });
+}

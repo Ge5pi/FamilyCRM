@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -48,6 +48,7 @@ class UserBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     role: UserRole = "Parent"
     email: Optional[str] = None
+    avatar: Optional[str] = Field(default=None, max_length=8)
 
     @field_validator("name")
     @classmethod
@@ -164,6 +165,7 @@ class UserJoinFamily(BaseModel):
 class UserResponse(UserBase, ORMBase):
     id: int
     coins: int
+    avatar: str = "🙂"
     family_id: Optional[int] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -185,6 +187,35 @@ class UserLocationUpdate(BaseModel):
     longitude: float = Field(ge=-180, le=180)
 
 
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    avatar: Optional[str] = Field(default=None, max_length=8)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Имя не может быть пустым")
+        return value
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+            raise ValueError(
+                f"Пароль не должен превышать {BCRYPT_MAX_PASSWORD_BYTES} байт"
+            )
+        return value
+
+
 # --- Event (Calendar) Schemas ---
 class EventBase(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -194,6 +225,7 @@ class EventBase(BaseModel):
     category: str = Field(default="General", max_length=60)
     recurrence: Recurrence = "none"
     recurrence_day: Optional[int] = None
+    recurrence_until: Optional[date] = None
     # Deprecated input flag kept for older clients: True means "daily".
     is_recurring: Optional[bool] = None
 
@@ -201,6 +233,14 @@ class EventBase(BaseModel):
     @classmethod
     def to_utc(cls, value: datetime) -> datetime:
         return as_utc(value)
+
+    @field_validator("recurrence_until", mode="before")
+    @classmethod
+    def parse_until(cls, value):
+        # Accept both "YYYY-MM-DD" and a full ISO timestamp.
+        if isinstance(value, str) and "T" in value:
+            return value.split("T")[0]
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -224,6 +264,14 @@ class EventBase(BaseModel):
                 raise ValueError("День месяца должен быть от 1 до 31")
         else:
             self.recurrence_day = None
+
+        if self.recurrence == "none":
+            self.recurrence_until = None
+        elif (
+            self.recurrence_until is not None
+            and self.recurrence_until < self.start_time.date()
+        ):
+            raise ValueError("Дата окончания серии не может быть раньше начала")
         return self
 
 
@@ -240,11 +288,19 @@ class EventUpdate(BaseModel):
     category: Optional[str] = Field(default=None, max_length=60)
     recurrence: Optional[Recurrence] = None
     recurrence_day: Optional[int] = None
+    recurrence_until: Optional[date] = None
 
     @field_validator("start_time", "end_time")
     @classmethod
     def to_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
         return _utc(value)
+
+    @field_validator("recurrence_until", mode="before")
+    @classmethod
+    def parse_until(cls, value):
+        if isinstance(value, str) and "T" in value:
+            return value.split("T")[0]
+        return value
 
     @field_validator("recurrence_day")
     @classmethod
@@ -326,6 +382,16 @@ class ExpenseResponse(ExpenseBase, ORMBase):
     @classmethod
     def to_utc(cls, value: datetime) -> datetime:
         return as_utc(value)
+
+
+class BudgetUpdate(BaseModel):
+    monthly_limit: float = Field(ge=0, le=100_000_000)
+
+
+class BudgetResponse(ORMBase):
+    id: int
+    category: str
+    monthly_limit: float
 
 
 # --- Shop / Room / Coins ---

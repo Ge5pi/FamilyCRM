@@ -6,8 +6,12 @@ import {
   RECURRENCE_OPTIONS,
   eventOccursOn,
   formatTime,
+  isSameDay,
   isoWeekday,
+  monthMatrix,
+  monthTitle,
   recurrenceLabel,
+  startOfMonth,
   toLocalDateKey,
   toUtcIso,
 } from '../datetime';
@@ -15,12 +19,19 @@ import EventEditModal from '../components/EventEditModal';
 
 export default function CalendarScreen({ user, data, refreshData }) {
   const [selectedUser, setSelectedUser] = useState(user);
-  const [selectedDayOffset, setSelectedDayOffset] = useState(0); // 0 = Today, 1 = Tomorrow, etc.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today;
+  });
+  const [calendarMode, setCalendarMode] = useState('week'); // 'week' | 'month'
+  const [monthCursor, setMonthCursor] = useState(() => startOfMonth(new Date()));
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('School');
   const [startTime, setStartTime] = useState('10:00');
   const [endTime, setEndTime] = useState('11:30');
   const [recurrence, setRecurrence] = useState('none');
+  const [recurrenceUntil, setRecurrenceUntil] = useState('');
   const [editingEvent, setEditingEvent] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -58,32 +69,55 @@ export default function CalendarScreen({ user, data, refreshData }) {
 
   const events = data?.events || [];
 
-  // Generate day options (today + 6 upcoming days) using the *local* date.
-  const getDayOptions = () => {
-    const days = [];
-    const weekdays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() + i);
-      days.push({
-        offset: i,
-        dayNum: d.getDate(),
-        dayName: weekdays[d.getDay()],
-        dateString: toLocalDateKey(d),
-        date: d,
-      });
-    }
-    return days;
-  };
+  const WEEKDAYS_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 
-  const dayOptions = getDayOptions();
-  const activeDay = dayOptions[selectedDayOffset];
+  // Day strip: today + 6 upcoming days using the *local* date.
+  const dayOptions = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() + index);
+    date.setHours(0, 0, 0, 0);
+    return {
+      offset: index,
+      dayNum: date.getDate(),
+      dayName: WEEKDAYS_SHORT[date.getDay()],
+      dateString: toLocalDateKey(date),
+      date,
+    };
+  });
+
+  const activeDay = {
+    date: selectedDate,
+    dateString: toLocalDateKey(selectedDate),
+    dayNum: selectedDate.getDate(),
+    dayName: WEEKDAYS_SHORT[selectedDate.getDay()],
+  };
 
   // Show events belonging to the selected member that occur on the active day
   // (including every occurrence of a recurring series).
   const filteredEvents = events.filter(
     (evt) => evt.user_id === selectedUser.id && eventOccursOn(evt, activeDay.date)
   );
+
+  const monthCells = monthMatrix(monthCursor.getFullYear(), monthCursor.getMonth());
+  const monthHeading = monthTitle(monthCursor.getFullYear(), monthCursor.getMonth());
+
+  const hasEventOn = (date) =>
+    events.some(
+      (evt) => evt.user_id === selectedUser.id && eventOccursOn(evt, date)
+    );
+
+  const switchMode = (mode) => {
+    setCalendarMode(mode);
+    if (mode === 'month') {
+      setMonthCursor(startOfMonth(selectedDate));
+    }
+  };
+
+  const shiftMonth = (delta) => {
+    const next = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + delta, 1);
+    setMonthCursor(next);
+    setSelectedDate(next);
+  };
 
   const handleAddEvent = async () => {
     if (!title) {
@@ -104,9 +138,23 @@ export default function CalendarScreen({ user, data, refreshData }) {
           : recurrence === 'monthly'
           ? activeDay.date.getDate()
           : null,
+      recurrence_until: recurrence !== 'none' && recurrenceUntil ? recurrenceUntil : null,
       user_id: user.id,
       family_id: user.family_id,
     };
+
+    if (recurrenceUntil && !/^\d{4}-\d{2}-\d{2}$/.test(recurrenceUntil)) {
+      setErrorMsg('Дата окончания должна быть в формате ГГГГ-ММ-ДД');
+      return;
+    }
+    if (
+      recurrence !== 'none' &&
+      recurrenceUntil &&
+      recurrenceUntil < activeDay.dateString
+    ) {
+      setErrorMsg('Дата окончания не может быть раньше даты события');
+      return;
+    }
 
     if (newEvent.end_time <= newEvent.start_time) {
       setErrorMsg('Время окончания должно быть позже времени начала');
@@ -118,6 +166,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
       setTitle('');
       setErrorMsg('');
       setRecurrence('none');
+      setRecurrenceUntil('');
       showAlert('Успешно', 'Событие сохранено!');
       refreshData();
     } catch (err) {
@@ -174,7 +223,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
                 { backgroundColor: member.role === 'Parent' ? '#D2E0FB' : '#FFD9C0' },
                 isMe && styles.myAvatar
               ]}>
-                <Text style={styles.avatarText}>{member.name[0]}</Text>
+                <Text style={styles.avatarText}>{member.avatar || member.name[0]}</Text>
                 {isMe && <Text style={styles.editBadge}>✏️</Text>}
               </View>
               <Text style={[styles.memberName, isMe && styles.myMemberName]}>
@@ -195,26 +244,95 @@ export default function CalendarScreen({ user, data, refreshData }) {
         </Text>
       </View>
 
-      {/* Days of the Week Selector Widget */}
-      <View style={styles.daySelectorContainer}>
-        {dayOptions.map((day) => (
-          <TouchableOpacity
-            key={day.offset}
-            style={[
-              styles.dayTab,
-              selectedDayOffset === day.offset && styles.dayTabActive
-            ]}
-            onPress={() => setSelectedDayOffset(day.offset)}
-          >
-            <Text style={[styles.dayLabel, selectedDayOffset === day.offset && styles.dayTextActive]}>
-              {day.dayName}
-            </Text>
-            <Text style={[styles.dayNumber, selectedDayOffset === day.offset && styles.dayTextActive]}>
-              {day.dayNum}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      {/* Week / Month switch */}
+      <View style={styles.modeRow}>
+        <TouchableOpacity
+          style={[styles.modeBtn, calendarMode === 'week' && styles.modeBtnActive]}
+          onPress={() => switchMode('week')}
+        >
+          <Text style={[styles.modeText, calendarMode === 'week' && styles.modeTextActive]}>
+            Неделя
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeBtn, calendarMode === 'month' && styles.modeBtnActive]}
+          onPress={() => switchMode('month')}
+        >
+          <Text style={[styles.modeText, calendarMode === 'month' && styles.modeTextActive]}>
+            Месяц
+          </Text>
+        </TouchableOpacity>
       </View>
+
+      {calendarMode === 'week' ? (
+        <View style={styles.daySelectorContainer}>
+          {dayOptions.map((day) => {
+            const active = isSameDay(day.date, selectedDate);
+            return (
+              <TouchableOpacity
+                key={day.offset}
+                style={[styles.dayTab, active && styles.dayTabActive]}
+                onPress={() => setSelectedDate(day.date)}
+              >
+                <Text style={[styles.dayLabel, active && styles.dayTextActive]}>
+                  {day.dayName}
+                </Text>
+                <Text style={[styles.dayNumber, active && styles.dayTextActive]}>
+                  {day.dayNum}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.monthCard}>
+          <View style={styles.monthHeader}>
+            <TouchableOpacity onPress={() => shiftMonth(-1)} style={styles.monthArrowBtn}>
+              <Text style={styles.monthArrow}>◀</Text>
+            </TouchableOpacity>
+            <Text style={styles.monthTitleText}>{monthHeading}</Text>
+            <TouchableOpacity onPress={() => shiftMonth(1)} style={styles.monthArrowBtn}>
+              <Text style={styles.monthArrow}>▶</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.weekHeader}>
+            {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((label) => (
+              <Text key={label} style={styles.weekHeaderText}>
+                {label}
+              </Text>
+            ))}
+          </View>
+          <View style={styles.monthGrid}>
+            {monthCells.map((cell, index) => {
+              const selected = isSameDay(cell, selectedDate);
+              const inMonth = cell.getMonth() === monthCursor.getMonth();
+              return (
+                <TouchableOpacity
+                  key={`${toLocalDateKey(cell)}-${index}`}
+                  style={[styles.monthCell, selected && styles.monthCellSelected]}
+                  onPress={() => {
+                    setSelectedDate(cell);
+                    if (!inMonth) setMonthCursor(startOfMonth(cell));
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.monthCellText,
+                      !inMonth && styles.monthCellTextMuted,
+                      selected && styles.monthCellTextSelected,
+                    ]}
+                  >
+                    {cell.getDate()}
+                  </Text>
+                  {hasEventOn(cell) ? (
+                    <View style={[styles.eventDot, selected && styles.eventDotSelected]} />
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
 
       <Text style={styles.sectionTitle}>Расписание на {activeDay.dayNum} ({activeDay.dayName})</Text>
       
@@ -307,6 +425,19 @@ export default function CalendarScreen({ user, data, refreshData }) {
               );
             })}
           </View>
+
+          {recurrence !== 'none' ? (
+            <>
+              <Text style={styles.label}>Повторять до (необязательно, ГГГГ-ММ-ДД)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="2026-12-31"
+                autoCapitalize="none"
+                value={recurrenceUntil}
+                onChangeText={setRecurrenceUntil}
+              />
+            </>
+          ) : null}
 
           <View style={styles.catRow}>
             {['School', 'Work', 'Routine', 'One-off'].map((catName) => (
@@ -427,10 +558,111 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: THEME.colors.textLight,
   },
+  modeRow: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.sm,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: 3,
+    marginBottom: THEME.spacing.sm,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
+    borderRadius: THEME.roundness.sm,
+  },
+  modeBtnActive: {
+    backgroundColor: THEME.colors.primary,
+  },
+  modeText: {
+    fontSize: 12,
+    color: THEME.colors.textLight,
+  },
+  modeTextActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
   daySelectorContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: THEME.spacing.md,
+  },
+  monthCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: THEME.spacing.sm,
+    marginBottom: THEME.spacing.md,
+  },
+  monthHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: THEME.spacing.sm,
+  },
+  monthArrowBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  monthArrow: {
+    fontSize: 16,
+    color: THEME.colors.primary,
+    fontWeight: 'bold',
+  },
+  monthTitleText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: THEME.colors.text,
+    textTransform: 'capitalize',
+  },
+  weekHeader: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  weekHeaderText: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 10,
+    color: THEME.colors.textLight,
+    fontWeight: 'bold',
+  },
+  monthGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  monthCell: {
+    width: `${100 / 7}%`,
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: THEME.roundness.sm,
+  },
+  monthCellSelected: {
+    backgroundColor: THEME.colors.primary,
+  },
+  monthCellText: {
+    fontSize: 12,
+    color: THEME.colors.text,
+  },
+  monthCellTextMuted: {
+    color: '#C9BFB8',
+  },
+  monthCellTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  eventDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: THEME.colors.primary,
+    marginTop: 2,
+  },
+  eventDotSelected: {
+    backgroundColor: '#FFFFFF',
   },
   dayTab: {
     flex: 1,

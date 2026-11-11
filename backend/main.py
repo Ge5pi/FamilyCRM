@@ -13,6 +13,7 @@ import logging
 import secrets
 import string
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import (
@@ -234,6 +235,7 @@ def build_event_candidate(
     category: str,
     recurrence: str,
     recurrence_day: Optional[int],
+    recurrence_until=None,
     user_id: int,
     family_id: int,
 ) -> models.Event:
@@ -254,6 +256,7 @@ def build_event_candidate(
         category=category,
         recurrence=recurrence,
         recurrence_day=day,
+        recurrence_until=recurrence_until if recurrence != models.RECURRENCE_NONE else None,
         user_id=user_id,
         family_id=family_id,
     )
@@ -264,6 +267,23 @@ def validate_recurrence_day(recurrence: str, day: Optional[int]) -> None:
         raise HTTPException(status_code=422, detail="День недели должен быть от 0 до 6")
     if recurrence == models.RECURRENCE_MONTHLY and day is not None and not 1 <= day <= 31:
         raise HTTPException(status_code=422, detail="День месяца должен быть от 1 до 31")
+
+
+def filtered_expenses(
+    db: Session,
+    family_id: int,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    category: Optional[str] = None,
+):
+    query = db.query(models.Expense).filter(models.Expense.family_id == family_id)
+    if date_from is not None:
+        query = query.filter(models.Expense.date >= ensure_utc_naive(date_from))
+    if date_to is not None:
+        query = query.filter(models.Expense.date <= ensure_utc_naive(date_to))
+    if category:
+        query = query.filter(models.Expense.category == category)
+    return query.order_by(models.Expense.date.desc())
 
 
 # --- System ---
@@ -424,6 +444,43 @@ def get_user(
     return db_user
 
 
+@app.patch("/users/{user_id}", response_model=schemas.UserResponse)
+def update_user_profile(
+    user_id: int,
+    update: schemas.UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_self(current_user, user_id)
+    db_user = get_user_or_404(db, user_id)
+
+    data = update.model_dump(exclude_unset=True)
+    if "avatar" in data and not data["avatar"]:
+        data["avatar"] = "🙂"
+
+    for field, value in data.items():
+        setattr(db_user, field, value)
+
+    db.commit()
+    db.refresh(db_user)
+    hub.notify(db_user.family_id, "family")
+    return db_user
+
+
+@app.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: schemas.PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Текущий пароль указан неверно")
+
+    current_user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return None
+
+
 @app.post("/users", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
     user: schemas.UserCreate,
@@ -445,6 +502,7 @@ def create_user(
         name=user.name,
         role=user.role,
         email=user.email,
+        avatar=user.avatar or "🙂",
         hashed_password=hash_password(user.password) if user.password else None,
         coins=0,
         family_id=current_user.family_id,
@@ -626,6 +684,87 @@ def purchase_shop_item(
     return purchase
 
 
+# --- Budgets ---
+@app.get("/families/{family_id}/budgets", response_model=List[schemas.BudgetResponse])
+def get_family_budgets(
+    family_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_family_membership(current_user, family_id)
+    return (
+        db.query(models.Budget)
+        .filter(models.Budget.family_id == family_id)
+        .order_by(models.Budget.category)
+        .all()
+    )
+
+
+@app.put(
+    "/families/{family_id}/budgets/{category}",
+    response_model=schemas.BudgetResponse,
+)
+def set_family_budget(
+    family_id: int,
+    category: str,
+    update: schemas.BudgetUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_parent),
+):
+    require_family_membership(current_user, family_id)
+    category = category.strip()
+    if not category or len(category) > 60:
+        raise HTTPException(status_code=422, detail="Некорректная категория")
+
+    budget = (
+        db.query(models.Budget)
+        .filter(
+            models.Budget.family_id == family_id,
+            models.Budget.category == category,
+        )
+        .first()
+    )
+    if budget is None:
+        budget = models.Budget(
+            family_id=family_id,
+            category=category,
+            monthly_limit=update.monthly_limit,
+        )
+        db.add(budget)
+    else:
+        budget.monthly_limit = update.monthly_limit
+
+    db.commit()
+    db.refresh(budget)
+    hub.notify(family_id, "budgets")
+    return budget
+
+
+@app.delete("/families/{family_id}/budgets/{category}", status_code=204)
+def delete_family_budget(
+    family_id: int,
+    category: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_parent),
+):
+    require_family_membership(current_user, family_id)
+    budget = (
+        db.query(models.Budget)
+        .filter(
+            models.Budget.family_id == family_id,
+            models.Budget.category == category,
+        )
+        .first()
+    )
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Бюджет не найден")
+
+    db.delete(budget)
+    db.commit()
+    hub.notify(family_id, "budgets")
+    return None
+
+
 # --- Events (Calendar) ---
 @app.post("/events", response_model=schemas.EventResponse, status_code=status.HTTP_201_CREATED)
 def create_event(
@@ -653,6 +792,7 @@ def create_event(
         category=event.category,
         recurrence=event.recurrence,
         recurrence_day=event.recurrence_day,
+        recurrence_until=event.recurrence_until,
         user_id=event.user_id,
         family_id=event.family_id,
     )
@@ -716,7 +856,16 @@ def update_event(
 
     recurrence = data.get("recurrence", db_event.recurrence)
     recurrence_day = data.get("recurrence_day", db_event.recurrence_day)
+    recurrence_until = data.get("recurrence_until", db_event.recurrence_until)
     validate_recurrence_day(recurrence, recurrence_day)
+
+    if recurrence == models.RECURRENCE_NONE:
+        recurrence_until = None
+    elif recurrence_until is not None and recurrence_until < start.date():
+        raise HTTPException(
+            status_code=422,
+            detail="Дата окончания серии не может быть раньше начала",
+        )
 
     candidate = build_event_candidate(
         title=data.get("title", db_event.title),
@@ -726,6 +875,7 @@ def update_event(
         category=data.get("category", db_event.category),
         recurrence=recurrence,
         recurrence_day=recurrence_day,
+        recurrence_until=recurrence_until,
         user_id=db_event.user_id,
         family_id=db_event.family_id,
     )
@@ -741,6 +891,7 @@ def update_event(
     db_event.category = candidate.category
     db_event.recurrence = candidate.recurrence
     db_event.recurrence_day = candidate.recurrence_day
+    db_event.recurrence_until = candidate.recurrence_until
 
     db.commit()
     db.refresh(db_event)
@@ -772,7 +923,7 @@ def delete_event(
 def create_task(
     task: schemas.TaskCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(require_parent),
 ):
     require_family_membership(current_user, task.family_id)
 
@@ -958,11 +1109,14 @@ def create_expense(
 @app.get("/families/{family_id}/expenses", response_model=List[schemas.ExpenseResponse])
 def get_family_expenses(
     family_id: int,
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    category: Optional[str] = Query(default=None, max_length=60),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     require_family_membership(current_user, family_id)
-    return db.query(models.Expense).filter(models.Expense.family_id == family_id).all()
+    return filtered_expenses(db, family_id, date_from, date_to, category).all()
 
 
 @app.patch("/expenses/{expense_id}", response_model=schemas.ExpenseResponse)
@@ -1014,11 +1168,13 @@ def delete_expense(
 @app.get("/families/{family_id}/expenses/summary", response_model=Dict[str, float])
 def get_family_expenses_summary(
     family_id: int,
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     require_family_membership(current_user, family_id)
-    expenses = db.query(models.Expense).filter(models.Expense.family_id == family_id).all()
+    expenses = filtered_expenses(db, family_id, date_from, date_to).all()
     summary: Dict[str, float] = {}
     for exp in expenses:
         summary[exp.category] = summary.get(exp.category, 0.0) + exp.amount

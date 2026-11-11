@@ -206,3 +206,73 @@ def test_update_event_rejects_overlap(client, register, auth_headers):
         headers=headers,
     )
     assert response.status_code == 400
+
+
+def test_recurrence_until_stops_conflicts(client, register, auth_headers):
+    parent = register(email="p@example.com", create_family_name="Семья")
+    headers = auth_headers(parent["access_token"])
+
+    response = create_event(
+        client,
+        headers,
+        title="Кружок до конца июля",
+        recurrence="weekly",
+        recurrence_until="2026-07-20",
+        start_time="2026-07-06T09:00:00",
+        end_time="2026-07-06T10:00:00",
+        user_id=parent["id"],
+        family_id=parent["family_id"],
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["recurrence_until"] == "2026-07-20"
+
+    # Still inside the series -> conflict.
+    inside = create_event(
+        client,
+        headers,
+        title="Внутри серии",
+        start_time="2026-07-13T09:30:00",
+        end_time="2026-07-13T10:30:00",
+        user_id=parent["id"],
+        family_id=parent["family_id"],
+    )
+    assert inside.status_code == 400
+
+    # After the series ended -> allowed.
+    after = create_event(
+        client,
+        headers,
+        title="После серии",
+        start_time="2026-07-27T09:30:00",
+        end_time="2026-07-27T10:30:00",
+        user_id=parent["id"],
+        family_id=parent["family_id"],
+    )
+    assert after.status_code == 201
+
+
+def test_recurrence_until_cannot_precede_start(client, register, auth_headers):
+    parent = register(email="p@example.com", create_family_name="Семья")
+    response = create_event(
+        client,
+        auth_headers(parent["access_token"]),
+        recurrence="weekly",
+        recurrence_until="2026-07-01",
+        user_id=parent["id"],
+        family_id=parent["family_id"],
+    )
+    assert response.status_code == 422
+
+
+def test_one_off_event_ignores_recurrence_until(client, register, auth_headers):
+    parent = register(email="p@example.com", create_family_name="Семья")
+    response = create_event(
+        client,
+        auth_headers(parent["access_token"]),
+        recurrence="none",
+        recurrence_until="2026-08-01",
+        user_id=parent["id"],
+        family_id=parent["family_id"],
+    )
+    assert response.status_code == 201
+    assert response.json()["recurrence_until"] is None

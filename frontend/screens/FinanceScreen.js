@@ -1,53 +1,115 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
-import { THEME } from '../theme';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+
 import { api } from '../api';
+import { formatDate, parseApiDate } from '../datetime';
+import BudgetModal from '../components/BudgetModal';
+import { THEME } from '../theme';
+
+const CATEGORIES = ['Продукты', 'Коммунальные', 'Развлечения', 'Другое'];
 
 export default function FinanceScreen({ user, data, refreshData }) {
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('Продукты');
-  const [summary, setSummary] = useState({});
 
-  // Cross-platform Alert wrapper
-  const showAlert = (title, message) => {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [budgets, setBudgets] = useState({});
+  const [budgetVisible, setBudgetVisible] = useState(false);
+
+  const isParent = user.role === 'Parent';
+
+  const showAlert = (alertTitle, message) => {
     if (Platform.OS === 'web') {
-      window.alert(`${title}\n\n${message}`);
+      window.alert(`${alertTitle}\n\n${message}`);
     } else {
-      Alert.alert(title, message);
+      Alert.alert(alertTitle, message);
     }
   };
 
-  // Cross-platform Confirm wrapper
-  const showConfirm = (title, message, onConfirm) => {
+  const showConfirm = (confirmTitle, message, onConfirm) => {
     if (Platform.OS === 'web') {
-      if (window.confirm(`${title}\n\n${message}`)) onConfirm();
+      if (window.confirm(`${confirmTitle}\n\n${message}`)) onConfirm();
     } else {
-      Alert.alert(title, message, [
+      Alert.alert(confirmTitle, message, [
         { text: 'Отмена', style: 'cancel' },
         { text: 'ОК', onPress: onConfirm, style: 'destructive' },
       ]);
     }
   };
 
-  const expenses = data?.expenses || [];
-
-  const fetchSummary = async () => {
+  const loadBudgets = useCallback(async () => {
     if (!user?.family_id) return;
     try {
-      const sumData = await api.get(
-        `/families/${user.family_id}/expenses/summary`
-      );
-      setSummary(sumData || {});
+      const list = await api.get(`/families/${user.family_id}/budgets`);
+      const map = {};
+      (list || []).forEach((budget) => {
+        map[budget.category] = budget.monthly_limit;
+      });
+      setBudgets(map);
     } catch (err) {
-      // Keep the last known summary; the next poll will retry.
-      console.warn('Не удалось загрузить сводку расходов:', err.message);
+      console.warn('Не удалось загрузить бюджеты:', err.message);
     }
-  };
+  }, [user?.family_id]);
 
   useEffect(() => {
-    fetchSummary();
-  }, [data]);
+    loadBudgets();
+  }, [loadBudgets]);
+
+  const monthDate = useMemo(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  }, [monthOffset]);
+
+  const monthLabel = monthDate.toLocaleDateString('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  const monthExpenses = useMemo(() => {
+    const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1, 0, 0, 0, 0);
+    const end = new Date(
+      monthDate.getFullYear(),
+      monthDate.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999
+    );
+    return (data?.expenses || []).filter((expense) => {
+      const date = parseApiDate(expense.date);
+      return date && date >= start && date <= end;
+    });
+  }, [data, monthDate]);
+
+  const visibleExpenses = useMemo(
+    () =>
+      categoryFilter === 'all'
+        ? monthExpenses
+        : monthExpenses.filter((expense) => expense.category === categoryFilter),
+    [monthExpenses, categoryFilter]
+  );
+
+  const summary = useMemo(() => {
+    const result = {};
+    monthExpenses.forEach((expense) => {
+      result[expense.category] = (result[expense.category] || 0) + expense.amount;
+    });
+    return result;
+  }, [monthExpenses]);
+
+  const totalAmount = Object.values(summary).reduce((sum, value) => sum + value, 0);
 
   const handleAddExpense = async () => {
     if (!title || !amount) {
@@ -57,11 +119,16 @@ export default function FinanceScreen({ user, data, refreshData }) {
 
     const newExpense = {
       title,
-      amount: parseFloat(amount),
+      amount: Number.parseFloat(String(amount).replace(',', '.')),
       category,
       user_id: user.id,
-      family_id: user.family_id || 1,
+      family_id: user.family_id,
     };
+
+    if (!Number.isFinite(newExpense.amount) || newExpense.amount <= 0) {
+      showAlert('Ошибка', 'Сумма должна быть положительным числом');
+      return;
+    }
 
     try {
       await api.post('/expenses', newExpense);
@@ -69,7 +136,6 @@ export default function FinanceScreen({ user, data, refreshData }) {
       setAmount('');
       showAlert('Успешно', 'Расход добавлен!');
       refreshData();
-      fetchSummary();
     } catch (err) {
       showAlert('Ошибка', err.message || 'Не удалось добавить расход');
     }
@@ -83,7 +149,6 @@ export default function FinanceScreen({ user, data, refreshData }) {
         try {
           await api.delete(`/expenses/${expense.id}`);
           refreshData();
-          fetchSummary();
         } catch (err) {
           showAlert('Ошибка', err.message || 'Не удалось удалить расход');
         }
@@ -93,14 +158,18 @@ export default function FinanceScreen({ user, data, refreshData }) {
 
   const getCategoryColor = (cat) => {
     switch (cat) {
-      case 'Продукты': return '#D2E0FB';
-      case 'Коммунальные': return '#F1C2B6';
-      case 'Развлечения': return '#FFD9C0';
-      default: return '#EADBC8';
+      case 'Продукты':
+        return '#D2E0FB';
+      case 'Коммунальные':
+        return '#F1C2B6';
+      case 'Развлечения':
+        return '#FFD9C0';
+      default:
+        return '#EADBC8';
     }
   };
 
-  const totalAmount = Object.values(summary).reduce((a, b) => a + b, 0);
+  const budgetEntries = Object.entries(budgets);
 
   return (
     <ScrollView style={styles.container}>
@@ -108,24 +177,113 @@ export default function FinanceScreen({ user, data, refreshData }) {
         <Text style={styles.subtitle}>Ручной трекер расходов вашей семьи</Text>
       </View>
 
-      {/* Visual Chart - Horizontal Bar Chart Representation */}
-      <View style={styles.chartCard}>
-        <Text style={styles.chartTitle}>Распределение расходов (Всего: {totalAmount.toFixed(0)} ₽)</Text>
-        {Object.entries(summary).map(([cat, val]) => {
-          const percentage = totalAmount > 0 ? (val / totalAmount) * 100 : 0;
-          return (
-            <View key={cat} style={styles.chartRow}>
-              <View style={styles.chartLabelRow}>
-                <Text style={styles.chartLabelText}>{cat}</Text>
-                <Text style={styles.chartValueText}>{val.toFixed(0)} ₽ ({percentage.toFixed(0)}%)</Text>
-              </View>
-              <View style={styles.progressBarBg}>
-                <View style={[styles.progressBarFill, { width: `${percentage}%`, backgroundColor: getCategoryColor(cat) }]} />
-              </View>
-            </View>
-          );
-        })}
+      <View style={styles.monthNav}>
+        <TouchableOpacity onPress={() => setMonthOffset((value) => value - 1)}>
+          <Text style={styles.monthArrow}>◀</Text>
+        </TouchableOpacity>
+        <Text style={styles.monthLabel}>{monthLabel}</Text>
+        <TouchableOpacity onPress={() => setMonthOffset((value) => value + 1)}>
+          <Text style={styles.monthArrow}>▶</Text>
+        </TouchableOpacity>
       </View>
+
+      <View style={styles.chartCard}>
+        <Text style={styles.chartTitle}>
+          Расходы за месяц (Всего: {totalAmount.toFixed(0)} ₽)
+        </Text>
+        {Object.entries(summary).length === 0 ? (
+          <Text style={styles.emptyChart}>За этот месяц расходов пока нет</Text>
+        ) : (
+          Object.entries(summary)
+            .sort((a, b) => b[1] - a[1])
+            .map(([cat, val]) => {
+              const percentage = totalAmount > 0 ? (val / totalAmount) * 100 : 0;
+              return (
+                <View key={cat} style={styles.chartRow}>
+                  <View style={styles.chartLabelRow}>
+                    <Text style={styles.chartLabelText}>{cat}</Text>
+                    <Text style={styles.chartValueText}>
+                      {val.toFixed(0)} ₽ ({percentage.toFixed(0)}%)
+                    </Text>
+                  </View>
+                  <View style={styles.progressBarBg}>
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        { width: `${percentage}%`, backgroundColor: getCategoryColor(cat) },
+                      ]}
+                    />
+                  </View>
+                </View>
+              );
+            })
+        )}
+      </View>
+
+      {budgetEntries.length > 0 ? (
+        <View style={styles.chartCard}>
+          <View style={styles.budgetHeader}>
+            <Text style={styles.chartTitle}>Бюджеты на месяц</Text>
+            {isParent ? (
+              <TouchableOpacity onPress={() => setBudgetVisible(true)}>
+                <Text style={styles.budgetEdit}>Изменить</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {budgetEntries.map(([cat, limit]) => {
+            const spent = summary[cat] || 0;
+            const percentage = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
+            const over = spent > limit;
+            return (
+              <View key={`budget-${cat}`} style={styles.chartRow}>
+                <View style={styles.chartLabelRow}>
+                  <Text style={styles.chartLabelText}>{cat}</Text>
+                  <Text style={[styles.chartValueText, over && styles.overText]}>
+                    {spent.toFixed(0)} / {limit.toFixed(0)} ₽
+                  </Text>
+                </View>
+                <View style={styles.progressBarBg}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: `${percentage}%`,
+                        backgroundColor: over ? THEME.colors.danger : THEME.colors.primary,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      ) : isParent ? (
+        <TouchableOpacity
+          style={styles.budgetButton}
+          onPress={() => setBudgetVisible(true)}
+        >
+          <Text style={styles.budgetButtonText}>Настроить бюджеты</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      <Text style={styles.label}>Фильтр по категории</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
+        <TouchableOpacity
+          style={[styles.filterChip, categoryFilter === 'all' && styles.filterChipActive]}
+          onPress={() => setCategoryFilter('all')}
+        >
+          <Text style={styles.filterChipText}>Все</Text>
+        </TouchableOpacity>
+        {CATEGORIES.map((catName) => (
+          <TouchableOpacity
+            key={catName}
+            style={[styles.filterChip, categoryFilter === catName && styles.filterChipActive]}
+            onPress={() => setCategoryFilter(catName)}
+          >
+            <Text style={styles.filterChipText}>{catName}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       <View style={styles.formCard}>
         <Text style={styles.formTitle}>Внести расход</Text>
@@ -145,13 +303,10 @@ export default function FinanceScreen({ user, data, refreshData }) {
 
         <Text style={styles.label}>Категория</Text>
         <View style={styles.catRow}>
-          {['Продукты', 'Коммунальные', 'Развлечения', 'Другое'].map((catName) => (
+          {CATEGORIES.map((catName) => (
             <TouchableOpacity
               key={catName}
-              style={[
-                styles.catButton,
-                category === catName && styles.catButtonActive
-              ]}
+              style={[styles.catButton, category === catName && styles.catButtonActive]}
               onPress={() => setCategory(catName)}
             >
               <Text style={styles.catButtonText}>{catName}</Text>
@@ -167,7 +322,7 @@ export default function FinanceScreen({ user, data, refreshData }) {
       <Text style={styles.listTitle}>История операций</Text>
       <Text style={styles.listHint}>Удерживайте запись, чтобы удалить её</Text>
       <View style={styles.listContainer}>
-        {expenses.map((exp) => (
+        {visibleExpenses.map((exp) => (
           <TouchableOpacity
             key={exp.id}
             style={styles.expenseItem}
@@ -175,12 +330,29 @@ export default function FinanceScreen({ user, data, refreshData }) {
           >
             <View style={styles.expenseInfo}>
               <Text style={styles.expenseTextTitle}>{exp.title}</Text>
-              <Text style={styles.expenseCatTag}>{exp.category}</Text>
+              <Text style={styles.expenseCatTag}>
+                {exp.category} · {formatDate(exp.date)}
+              </Text>
             </View>
             <Text style={styles.expenseValue}>- {exp.amount} ₽</Text>
           </TouchableOpacity>
         ))}
+        {visibleExpenses.length === 0 && (
+          <Text style={styles.emptyChart}>За этот период операций нет</Text>
+        )}
       </View>
+
+      <BudgetModal
+        visible={budgetVisible}
+        familyId={user.family_id}
+        categories={CATEGORIES}
+        budgets={budgets}
+        onClose={() => setBudgetVisible(false)}
+        onSaved={() => {
+          loadBudgets();
+          refreshData();
+        }}
+      />
     </ScrollView>
   );
 }
@@ -192,11 +364,35 @@ const styles = StyleSheet.create({
     padding: THEME.spacing.md,
   },
   header: {
-    marginBottom: THEME.spacing.md,
+    marginBottom: THEME.spacing.sm,
   },
   subtitle: {
-    fontSize: 15,
+    fontSize: 14,
     color: THEME.colors.textLight,
+  },
+  monthNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    paddingVertical: 8,
+    paddingHorizontal: THEME.spacing.md,
+    marginBottom: THEME.spacing.sm,
+  },
+  monthArrow: {
+    fontSize: 18,
+    color: THEME.colors.primary,
+    fontWeight: 'bold',
+    paddingHorizontal: 8,
+  },
+  monthLabel: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: THEME.colors.text,
+    textTransform: 'capitalize',
   },
   chartCard: {
     backgroundColor: '#FFFFFF',
@@ -210,7 +406,41 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 13,
     color: THEME.colors.text,
+    marginBottom: THEME.spacing.sm,
+  },
+  budgetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  budgetEdit: {
+    fontSize: 11,
+    color: THEME.colors.primary,
+    fontWeight: 'bold',
+    marginBottom: THEME.spacing.sm,
+  },
+  budgetButton: {
+    borderWidth: 1,
+    borderColor: THEME.colors.primary,
+    borderRadius: THEME.roundness.md,
+    paddingVertical: 10,
+    alignItems: 'center',
     marginBottom: THEME.spacing.md,
+  },
+  budgetButtonText: {
+    color: THEME.colors.primary,
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  emptyChart: {
+    fontSize: 11,
+    color: THEME.colors.textLight,
+    fontStyle: 'italic',
+    paddingVertical: 8,
+    textAlign: 'center',
+  },
+  overText: {
+    color: THEME.colors.danger,
   },
   chartRow: {
     marginBottom: THEME.spacing.sm,
@@ -238,6 +468,27 @@ const styles = StyleSheet.create({
   progressBarFill: {
     height: '100%',
     borderRadius: 4,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    marginBottom: THEME.spacing.md,
+  },
+  filterChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: THEME.roundness.sm,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    marginRight: 6,
+  },
+  filterChipActive: {
+    backgroundColor: THEME.colors.primary,
+    borderColor: THEME.colors.primary,
+  },
+  filterChipText: {
+    fontSize: 11,
+    color: THEME.colors.text,
   },
   formCard: {
     backgroundColor: '#FFFFFF',
@@ -343,5 +594,5 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: THEME.colors.danger,
     fontSize: 14,
-  }
+  },
 });

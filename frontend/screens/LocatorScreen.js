@@ -94,7 +94,7 @@ export default function LocatorScreen({ user, data, refreshData }) {
             <View key={member.id} style={styles.memberCard}>
               <View style={styles.avatarRow}>
                 <View style={[styles.avatar, { backgroundColor: member.role === 'Parent' ? '#D2E0FB' : '#FFD9C0' }]}>
-                  <Text style={styles.avatarLetter}>{member.name[0]}</Text>
+                  <Text style={styles.avatarLetter}>{member.avatar || member.name[0]}</Text>
                 </View>
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.name}</Text>

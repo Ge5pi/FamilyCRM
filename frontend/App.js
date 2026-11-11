@@ -1,10 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Calendar, CheckSquare, Home, MapPin, DollarSign } from 'lucide-react-native';
+import {
+  Calendar,
+  CheckSquare,
+  DollarSign,
+  Home,
+  MapPin,
+  User as UserIcon,
+} from 'lucide-react-native';
 
 import AuthScreen from './screens/AuthScreen';
 import CalendarScreen from './screens/CalendarScreen';
@@ -12,6 +19,7 @@ import KanbanScreen from './screens/KanbanScreen';
 import KidsScreen from './screens/KidsScreen';
 import LocatorScreen from './screens/LocatorScreen';
 import FinanceScreen from './screens/FinanceScreen';
+import ProfileScreen from './screens/ProfileScreen';
 import { api, setAuthToken, setUnauthorizedHandler } from './api';
 import { clearToken, loadToken, saveToken } from './storage';
 import useFamilyRealtime from './useFamilyRealtime';
@@ -142,6 +150,8 @@ export default function App() {
                 return <MapPin color={color} size={size} />;
               } else if (route.name === 'Финансы') {
                 return <DollarSign color={color} size={size} />;
+              } else if (route.name === 'Профиль') {
+                return <UserIcon color={color} size={size} />;
               }
               return null;
             },
@@ -155,6 +165,9 @@ export default function App() {
               paddingTop: 5,
               height: 60,
             },
+            tabBarLabelStyle: {
+              fontSize: 9,
+            },
             headerStyle: {
               backgroundColor: THEME.colors.background,
               shadowColor: 'transparent',
@@ -165,11 +178,6 @@ export default function App() {
               fontSize: 20,
               fontWeight: 'bold',
             },
-            headerRight: () => (
-              <TouchableOpacity onPress={handleLogout} style={{ marginRight: 16 }}>
-                <Text style={{ color: THEME.colors.danger, fontSize: 12 }}>Выйти</Text>
-              </TouchableOpacity>
-            ),
           })}
         >
           <Tab.Screen name="Календарь">
@@ -186,6 +194,17 @@ export default function App() {
           </Tab.Screen>
           <Tab.Screen name="Финансы">
             {props => <FinanceScreen {...props} user={currentUser} refreshData={fetchFamilyData} data={familyOverview} />}
+          </Tab.Screen>
+          <Tab.Screen name="Профиль">
+            {props => (
+              <ProfileScreen
+                {...props}
+                user={currentUser}
+                data={familyOverview}
+                refreshData={fetchFamilyData}
+                onLogout={handleLogout}
+              />
+            )}
           </Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>

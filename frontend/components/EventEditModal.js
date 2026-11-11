@@ -42,6 +42,7 @@ export default function EventEditModal({ visible, event, onClose, onSaved }) {
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('10:00');
   const [recurrence, setRecurrence] = useState('none');
+  const [recurrenceUntil, setRecurrenceUntil] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -52,6 +53,7 @@ export default function EventEditModal({ visible, event, onClose, onSaved }) {
     setStartTime(formatTimeInput(event.start_time));
     setEndTime(formatTimeInput(event.end_time));
     setRecurrence(event.recurrence || 'none');
+    setRecurrenceUntil(event.recurrence_until || '');
     setError('');
   }, [event]);
 
@@ -84,6 +86,15 @@ export default function EventEditModal({ visible, event, onClose, onSaved }) {
       return;
     }
 
+    if (recurrenceUntil && !/^\d{4}-\d{2}-\d{2}$/.test(recurrenceUntil)) {
+      setError('Дата окончания должна быть в формате ГГГГ-ММ-ДД');
+      return;
+    }
+    if (recurrence !== 'none' && recurrenceUntil && recurrenceUntil < dateKey) {
+      setError('Дата окончания не может быть раньше даты события');
+      return;
+    }
+
     const payload = {
       title: title.trim(),
       category,
@@ -96,6 +107,8 @@ export default function EventEditModal({ visible, event, onClose, onSaved }) {
           : recurrence === 'monthly'
           ? startDate.getDate()
           : null,
+      recurrence_until:
+        recurrence !== 'none' && recurrenceUntil ? recurrenceUntil : null,
     };
 
     setSaving(true);
@@ -174,6 +187,19 @@ export default function EventEditModal({ visible, event, onClose, onSaved }) {
                 </TouchableOpacity>
               ))}
             </View>
+
+            {recurrence !== 'none' ? (
+              <>
+                <Text style={styles.label}>Повторять до (необязательно)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="2026-12-31"
+                  autoCapitalize="none"
+                  value={recurrenceUntil}
+                  onChangeText={setRecurrenceUntil}
+                />
+              </>
+            ) : null}
 
             <View style={styles.actions}>
               <TouchableOpacity style={[styles.button, styles.deleteButton]} onPress={remove}>
