@@ -1,6 +1,7 @@
 import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -58,6 +59,8 @@ class Family(Base):
     expenses = relationship("Expense", back_populates="family")
     purchases = relationship("Purchase", back_populates="family")
     budgets = relationship("Budget", back_populates="family")
+    geofences = relationship("Geofence", back_populates="family")
+    location_alerts = relationship("LocationAlert", back_populates="family")
 
 
 class User(Base):
@@ -70,6 +73,8 @@ class User(Base):
     avatar = Column(String, nullable=False, default="🙂")
     role = Column(String, default=ROLE_PARENT)
     coins = Column(Integer, default=0, nullable=False)
+    # Incremented on password change/reset to invalidate old JWTs.
+    token_version = Column(Integer, nullable=False, default=0)
     family_id = Column(Integer, ForeignKey("families.id"), index=True, nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
@@ -83,6 +88,7 @@ class User(Base):
     expenses = relationship("Expense", back_populates="user")
     purchases = relationship("Purchase", back_populates="user")
     coin_transactions = relationship("CoinTransaction", back_populates="user")
+    push_subscriptions = relationship("PushSubscription", back_populates="user")
 
 
 class Event(Base):
@@ -217,3 +223,94 @@ class Budget(Base):
     monthly_limit = Column(Float, nullable=False)
 
     family = relationship("Family", back_populates="budgets")
+
+
+class PasswordResetToken(Base):
+    """One-time code for resetting a forgotten password."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    user = relationship("User")
+
+
+class PushSubscription(Base):
+    """Expo push token registered by one of the user's devices."""
+
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_push_subscriptions_token"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token = Column(String, nullable=False)
+    platform = Column(String, nullable=False, default="unknown")
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
+
+    user = relationship("User", back_populates="push_subscriptions")
+
+
+class Geofence(Base):
+    """A named circular area (school, home) used for enter/exit alerts."""
+
+    __tablename__ = "geofences"
+    __table_args__ = (
+        UniqueConstraint("family_id", "name", name="uq_geofences_family_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    family_id = Column(
+        Integer, ForeignKey("families.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    name = Column(String, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    radius_m = Column(Float, nullable=False, default=150)
+    notify_enter = Column(Boolean, nullable=False, default=True)
+    notify_exit = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
+
+    family = relationship("Family", back_populates="geofences")
+
+
+class LocationAlert(Base):
+    """An enter/exit event produced by a geofence transition."""
+
+    __tablename__ = "location_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    family_id = Column(
+        Integer, ForeignKey("families.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    geofence_id = Column(
+        Integer, ForeignKey("geofences.id", ondelete="SET NULL"), nullable=True
+    )
+    # Snapshots keep the feed readable after a geofence is deleted.
+    geofence_name = Column(String, nullable=False)
+    user_name = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # enter | exit
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+    family = relationship("Family", back_populates="location_alerts")

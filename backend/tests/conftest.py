@@ -17,6 +17,8 @@ if str(BACKEND_DIR) not in sys.path:
 # Must be set *before* importing the application config.
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-1234567890")
+# Never call the real Expo Push API from tests.
+os.environ["PUSH_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402

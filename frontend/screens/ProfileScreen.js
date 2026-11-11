@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -12,11 +13,27 @@ import {
 } from 'react-native';
 
 import { api } from '../api';
+import { requestNotificationPermission } from '../notifications';
+import { registerForPushNotificationsAsync } from '../push';
+import {
+  clearPushToken,
+  loadPushToken,
+  saveNotificationsEnabled,
+  savePushToken,
+} from '../storage';
 import { THEME } from '../theme';
 
 const AVATARS = ['🙂', '😀', '🦊', '🐱', '🐼', '🦁', '🐧', '🚀', '🌸', '⚽', '🎨', '🎮'];
 
-export default function ProfileScreen({ user, data, refreshData, onLogout }) {
+export default function ProfileScreen({
+  user,
+  family,
+  refreshData,
+  onLogout,
+  onAuthUpdated,
+  notificationsEnabled,
+  onNotificationsChanged,
+}) {
   const [name, setName] = useState(user.name || '');
   const [avatar, setAvatar] = useState(user.avatar || '🙂');
   const [savingProfile, setSavingProfile] = useState(false);
@@ -25,12 +42,63 @@ export default function ProfileScreen({ user, data, refreshData, onLogout }) {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
+  const [pushToken, setPushToken] = useState(null);
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    loadPushToken()
+      .then(setPushToken)
+      .catch(() => {});
+  }, []);
 
   const showAlert = (title, message) => {
     if (Platform.OS === 'web') {
       window.alert(`${title}\n\n${message}`);
     } else {
       Alert.alert(title, message);
+    }
+  };
+
+  const toggleNotifications = async (value) => {
+    if (value) {
+      const granted = await requestNotificationPermission();
+      if (!granted) {
+        showAlert(
+          'Нет доступа',
+          'Разрешите уведомления в настройках устройства, чтобы получать напоминания.'
+        );
+        return;
+      }
+    }
+    await saveNotificationsEnabled(value);
+    onNotificationsChanged?.(value);
+  };
+
+  const togglePush = async (value) => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      if (value) {
+        const token = await registerForPushNotificationsAsync();
+        await api.post(`/users/${user.id}/push-subscriptions`, {
+          token,
+          platform: Platform.OS,
+        });
+        await savePushToken(token);
+        setPushToken(token);
+        showAlert('Готово', 'Push-уведомления включены для этого устройства');
+      } else {
+        const query = pushToken
+          ? `?token=${encodeURIComponent(pushToken)}`
+          : '';
+        await api.delete(`/users/${user.id}/push-subscriptions${query}`);
+        await clearPushToken();
+        setPushToken(null);
+      }
+    } catch (err) {
+      showAlert('Push недоступен', err.message || 'Не удалось настроить push');
+    } finally {
+      setPushBusy(false);
     }
   };
 
@@ -67,10 +135,12 @@ export default function ProfileScreen({ user, data, refreshData, onLogout }) {
 
     setChangingPassword(true);
     try {
-      await api.post('/auth/change-password', {
+      const auth = await api.post('/auth/change-password', {
         current_password: currentPassword,
         new_password: newPassword,
       });
+      // The backend rotates the token version; keep the session alive.
+      onAuthUpdated?.(auth);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -89,7 +159,7 @@ export default function ProfileScreen({ user, data, refreshData, onLogout }) {
         <Text style={styles.heroName}>{name || user.name}</Text>
         <Text style={styles.heroRole}>
           {user.role === 'Parent' ? 'Родитель' : 'Ребёнок'}
-          {data?.name ? ` · ${data.name}` : ''}
+          {family?.name ? ` · ${family.name}` : ''}
         </Text>
         {user.email ? <Text style={styles.heroEmail}>{user.email}</Text> : null}
       </View>
@@ -125,16 +195,50 @@ export default function ProfileScreen({ user, data, refreshData, onLogout }) {
       <View style={styles.card}>
         <View style={styles.row}>
           <Text style={styles.rowLabel}>Название</Text>
-          <Text style={styles.rowValue}>{data?.name || '—'}</Text>
+          <Text style={styles.rowValue}>{family?.name || '—'}</Text>
         </View>
         <View style={styles.row}>
           <Text style={styles.rowLabel}>Код приглашения</Text>
-          <Text style={styles.joinCode}>{data?.join_code || '—'}</Text>
+          <Text style={styles.joinCode}>{family?.join_code || '—'}</Text>
         </View>
         <Text style={styles.hint}>
           Передайте код близким — они введут его при регистрации и попадут в вашу семью.
         </Text>
       </View>
+
+      {Platform.OS !== 'web' ? (
+        <>
+          <Text style={styles.sectionTitle}>Уведомления</Text>
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <Text style={styles.rowLabel}>Напоминать о событиях за 15 минут</Text>
+              <Switch
+                value={!!notificationsEnabled}
+                onValueChange={toggleNotifications}
+                trackColor={{ true: THEME.colors.primary }}
+              />
+            </View>
+            <Text style={styles.hint}>
+              Напоминания работают локально на устройстве и обновляются при
+              изменении календаря.
+            </Text>
+
+            <View style={[styles.row, styles.rowDivider]}>
+              <Text style={styles.rowLabel}>Push-уведомления</Text>
+              <Switch
+                value={!!pushToken}
+                onValueChange={togglePush}
+                disabled={pushBusy}
+                trackColor={{ true: THEME.colors.primary }}
+              />
+            </View>
+            <Text style={styles.hint}>
+              Push о назначенных задачах и событиях. Требует development build с
+              EAS projectId — в Expo Go удалённый push не работает.
+            </Text>
+          </View>
+        </>
+      ) : null}
 
       <Text style={styles.sectionTitle}>Безопасность</Text>
       <View style={styles.card}>
@@ -267,6 +371,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 6,
+  },
+  rowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: '#F5EFE6',
+    marginTop: 6,
+    paddingTop: 10,
   },
   rowLabel: {
     fontSize: 12,

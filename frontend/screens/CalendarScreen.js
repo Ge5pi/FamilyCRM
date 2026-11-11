@@ -16,8 +16,9 @@ import {
   toUtcIso,
 } from '../datetime';
 import EventEditModal from '../components/EventEditModal';
+import useFamilyResource from '../useFamilyResource';
 
-export default function CalendarScreen({ user, data, refreshData }) {
+export default function CalendarScreen({ user, members, refreshKey }) {
   const [selectedUser, setSelectedUser] = useState(user);
   const [selectedDate, setSelectedDate] = useState(() => {
     const today = new Date();
@@ -64,10 +65,18 @@ export default function CalendarScreen({ user, data, refreshData }) {
     }
   };
 
-  // Family members come from the API; empty until the first successful load.
-  const members = data?.users || [];
-
-  const events = data?.events || [];
+  // Only the calendar resource is loaded here; members come from the app shell.
+  const familyId = user?.family_id;
+  const {
+    data: eventsData,
+    loading: eventsLoading,
+    error: eventsError,
+    refresh: refreshEvents,
+  } = useFamilyResource(
+    familyId ? `/families/${familyId}/events` : null,
+    { refreshKey }
+  );
+  const events = eventsData || [];
 
   const WEEKDAYS_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 
@@ -168,7 +177,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
       setRecurrence('none');
       setRecurrenceUntil('');
       showAlert('Успешно', 'Событие сохранено!');
-      refreshData();
+      refreshEvents();
     } catch (err) {
       setErrorMsg(err.message || 'Не удалось сохранить событие');
     }
@@ -192,7 +201,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
       async () => {
         try {
           await api.delete(`/events/${eventId}`);
-          refreshData();
+          refreshEvents();
         } catch (err) {
           showAlert('Ошибка', err.message || 'Не удалось удалить событие');
         }
@@ -376,8 +385,13 @@ export default function CalendarScreen({ user, data, refreshData }) {
             </TouchableOpacity>
           );
         })}
+        {eventsError ? <Text style={styles.errorText}>{eventsError}</Text> : null}
         {filteredEvents.length === 0 && (
-          <Text style={styles.noEvents}>Событий нет. Добавьте, кликнув на день и время!</Text>
+          <Text style={styles.noEvents}>
+            {eventsLoading && !eventsData
+              ? 'Загрузка событий…'
+              : 'Событий нет. Добавьте, кликнув на день и время!'}
+          </Text>
         )}
       </View>
 
@@ -468,7 +482,7 @@ export default function CalendarScreen({ user, data, refreshData }) {
         visible={!!editingEvent}
         event={editingEvent}
         onClose={() => setEditingEvent(null)}
-        onSaved={refreshData}
+        onSaved={refreshEvents}
       />
     </ScrollView>
   );

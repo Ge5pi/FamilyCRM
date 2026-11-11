@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -21,46 +21,125 @@ import LocatorScreen from './screens/LocatorScreen';
 import FinanceScreen from './screens/FinanceScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import { api, setAuthToken, setUnauthorizedHandler } from './api';
-import { clearToken, loadToken, saveToken } from './storage';
+import {
+  clearToken,
+  loadNotificationsEnabled,
+  loadPushToken,
+  loadToken,
+  saveToken,
+  saveUserId,
+} from './storage';
+import { cancelEventReminders, scheduleEventReminders } from './notifications';
+import { stopBackgroundTracking } from './backgroundLocation';
 import useFamilyRealtime from './useFamilyRealtime';
 import { THEME } from './theme';
 
 const Tab = createBottomTabNavigator();
 
-// WebSocket delivers updates instantly; polling is only a safety net
-// (e.g. a missed message while the app was in the background).
-const POLL_INTERVAL_MS = 30000;
+// WebSocket delivers updates instantly; a slow poll is only a safety net.
+const POLL_INTERVAL_MS = 60000;
+
+const EMPTY_REFRESH_KEYS = {
+  events: 0,
+  tasks: 0,
+  expenses: 0,
+  budgets: 0,
+  members: 0,
+};
 
 // ---- Main App ----
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
-  const [familyOverview, setFamilyOverview] = useState(null);
+  const [family, setFamily] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [refreshKeys, setRefreshKeys] = useState(EMPTY_REFRESH_KEYS);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const lastReminderSignature = useRef('');
 
   const handleLogout = useCallback(() => {
+    const userId = currentUser?.id;
+    if (userId) {
+      loadPushToken()
+        .then((token) => {
+          if (!token) return;
+          const query = `?token=${encodeURIComponent(token)}`;
+          return api.delete(`/users/${userId}/push-subscriptions${query}`);
+        })
+        .catch(() => {});
+    }
+
     setAuthToken(null);
     setCurrentUser(null);
-    setFamilyOverview(null);
+    setFamily(null);
+    setMembers([]);
+    setRefreshKeys(EMPTY_REFRESH_KEYS);
+    lastReminderSignature.current = '';
+    cancelEventReminders().catch(() => {});
+    stopBackgroundTracking().catch(() => {});
+    saveUserId(null).catch(() => {});
     clearToken().catch(() => {});
+  }, [currentUser?.id]);
+
+  const handleNotificationsChanged = useCallback((enabled) => {
+    lastReminderSignature.current = '';
+    setNotificationsEnabled(enabled);
   }, []);
 
-  const fetchFamilyData = useCallback(async () => {
+  const bumpRefreshKeys = useCallback((types) => {
+    setRefreshKeys((previous) => {
+      const next = { ...previous };
+      types.forEach((type) => {
+        next[type] = (next[type] || 0) + 1;
+      });
+      return next;
+    });
+  }, []);
+
+  // Small, frequently-needed family metadata (name, join code, members).
+  const refreshFamilyMeta = useCallback(async () => {
     const familyId = currentUser?.family_id;
     if (!familyId) return;
     try {
-      const data = await api.get(`/families/${familyId}/overview`);
-      setFamilyOverview(data);
-      const dbUser = data.users.find((member) => member.id === currentUser.id);
-      if (dbUser) {
-        setCurrentUser((prev) => (prev ? { ...prev, ...dbUser } : prev));
+      const [familyData, memberList] = await Promise.all([
+        api.get(`/families/${familyId}`),
+        api.get(`/families/${familyId}/members`),
+      ]);
+      setFamily(familyData);
+      setMembers(memberList || []);
+      const me = (memberList || []).find(
+        (member) => member.id === currentUser.id
+      );
+      if (me) {
+        setCurrentUser((prev) => (prev ? { ...prev, ...me } : prev));
       }
     } catch (err) {
-      // A 401 already triggers the global unauthorized handler (logout).
       if (err.status !== 401) {
         console.warn('Не удалось обновить данные семьи:', err.message);
       }
     }
   }, [currentUser?.family_id, currentUser?.id]);
+
+  // Restore notification preference.
+  useEffect(() => {
+    loadNotificationsEnabled()
+      .then(setNotificationsEnabled)
+      .catch(() => {});
+  }, []);
+
+  // Re-register the stored push token (e.g. after a backend reset or relogin).
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    loadPushToken()
+      .then((token) => {
+        if (!token) return;
+        return api.post(`/users/${currentUser.id}/push-subscriptions`, {
+          token,
+          platform: Platform.OS,
+        });
+      })
+      .catch(() => {});
+  }, [currentUser?.id]);
 
   // Restore the saved session on app launch.
   useEffect(() => {
@@ -74,6 +153,7 @@ export default function App() {
         const me = await api.me();
         if (!cancelled) {
           setCurrentUser({ ...me, access_token: token });
+          saveUserId(me.id).catch(() => {});
         }
       } catch (err) {
         setAuthToken(null);
@@ -94,20 +174,92 @@ export default function App() {
     return () => setUnauthorizedHandler(null);
   }, [handleLogout]);
 
-  // Live updates + slow polling fallback.
-  useFamilyRealtime(currentUser?.family_id, fetchFamilyData);
+  // Live updates bump only the resources that actually changed.
+  useFamilyRealtime(currentUser?.family_id, (message) => {
+    switch (message?.type) {
+      case 'events':
+        bumpRefreshKeys(['events']);
+        break;
+      case 'tasks':
+        // Task completion changes the coin balance shown in the family meta.
+        bumpRefreshKeys(['tasks', 'members']);
+        break;
+      case 'expenses':
+        bumpRefreshKeys(['expenses']);
+        break;
+      case 'budgets':
+        bumpRefreshKeys(['budgets']);
+        break;
+      case 'room':
+      case 'location':
+      case 'family':
+        bumpRefreshKeys(['members']);
+        break;
+      default:
+        bumpRefreshKeys(['events', 'tasks', 'expenses', 'budgets', 'members']);
+    }
+  });
 
   useEffect(() => {
     if (!currentUser?.family_id) return undefined;
-    fetchFamilyData();
-    const interval = setInterval(fetchFamilyData, POLL_INTERVAL_MS);
+    const interval = setInterval(
+      () => bumpRefreshKeys(['events', 'tasks', 'expenses', 'budgets', 'members']),
+      POLL_INTERVAL_MS
+    );
     return () => clearInterval(interval);
-  }, [currentUser?.family_id, fetchFamilyData]);
+  }, [currentUser?.family_id, bumpRefreshKeys]);
+
+  useEffect(() => {
+    if (currentUser?.family_id) {
+      refreshFamilyMeta();
+    }
+  }, [currentUser?.family_id, refreshKeys.members, refreshFamilyMeta]);
+
+  // Local reminders use only the current user's events (small targeted call).
+  useEffect(() => {
+    if (!currentUser?.id) return undefined;
+
+    if (!notificationsEnabled) {
+      lastReminderSignature.current = '';
+      cancelEventReminders().catch(() => {});
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const events = await api.get(`/users/${currentUser.id}/events`);
+        if (cancelled) return;
+
+        const signature = (events || [])
+          .map(
+            (event) =>
+              `${event.id}:${event.start_time}:${event.end_time}:${event.recurrence}:${event.recurrence_day}:${event.recurrence_until}`
+          )
+          .join('|');
+
+        if (signature === lastReminderSignature.current) return;
+        lastReminderSignature.current = signature;
+        await scheduleEventReminders(events, currentUser.id);
+      } catch (err) {
+        if (err.status !== 401) {
+          console.warn('Не удалось обновить напоминания:', err.message);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, notificationsEnabled, refreshKeys.events]);
 
   const handleLoginSuccess = (auth) => {
     setAuthToken(auth?.access_token);
     saveToken(auth?.access_token).catch(() => {});
     setCurrentUser(auth);
+    saveUserId(auth?.id).catch(() => {});
+    setRefreshKeys(EMPTY_REFRESH_KEYS);
   };
 
   // Step 0: restoring the session
@@ -181,28 +333,70 @@ export default function App() {
           })}
         >
           <Tab.Screen name="Календарь">
-            {props => <CalendarScreen {...props} user={currentUser} refreshData={fetchFamilyData} data={familyOverview} />}
+            {(props) => (
+              <CalendarScreen
+                {...props}
+                user={currentUser}
+                members={members}
+                refreshKey={refreshKeys.events}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen name="Задачи">
-            {props => <KanbanScreen {...props} user={currentUser} refreshData={fetchFamilyData} data={familyOverview} />}
+            {(props) => (
+              <KanbanScreen
+                {...props}
+                user={currentUser}
+                members={members}
+                refreshKey={refreshKeys.tasks}
+                refreshData={refreshFamilyMeta}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen name="Мой Дом">
-            {props => <KidsScreen {...props} user={currentUser} refreshData={fetchFamilyData} />}
+            {(props) => (
+              <KidsScreen
+                {...props}
+                user={currentUser}
+                refreshKey={refreshKeys.members}
+                refreshData={refreshFamilyMeta}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen name="Локатор">
-            {props => <LocatorScreen {...props} user={currentUser} refreshData={fetchFamilyData} data={familyOverview} />}
+            {(props) => (
+              <LocatorScreen
+                {...props}
+                user={currentUser}
+                members={members}
+                family={family}
+                refreshKey={refreshKeys.members}
+                refreshData={refreshFamilyMeta}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen name="Финансы">
-            {props => <FinanceScreen {...props} user={currentUser} refreshData={fetchFamilyData} data={familyOverview} />}
+            {(props) => (
+              <FinanceScreen
+                {...props}
+                user={currentUser}
+                refreshKey={refreshKeys.expenses}
+                budgetsRefreshKey={refreshKeys.budgets}
+                refreshData={refreshFamilyMeta}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen name="Профиль">
-            {props => (
+            {(props) => (
               <ProfileScreen
                 {...props}
                 user={currentUser}
-                data={familyOverview}
-                refreshData={fetchFamilyData}
+                family={family}
+                refreshData={refreshFamilyMeta}
                 onLogout={handleLogout}
+                onAuthUpdated={handleLoginSuccess}
+                notificationsEnabled={notificationsEnabled}
+                onNotificationsChanged={handleNotificationsChanged}
               />
             )}
           </Tab.Screen>

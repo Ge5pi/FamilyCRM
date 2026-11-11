@@ -9,14 +9,16 @@ database stores naive UTC values so SQLite and PostgreSQL behave identically.
 """
 
 import asyncio
+import hashlib
 import logging
 import secrets
 import string
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
@@ -35,6 +37,9 @@ import schemas
 from catalog import SHOP_ITEMS, get_shop_item
 from config import DEV_SECRET_KEY, settings
 from database import get_db
+from email_sender import send_password_reset_code
+from geofence import is_inside
+from push import send_push_to_users
 from deps import (
     get_current_user,
     get_family_or_404,
@@ -139,7 +144,7 @@ def generate_join_code(db: Session) -> str:
 
 def build_auth_response(user: models.User) -> schemas.AuthResponse:
     """Serialize a user together with a freshly issued access token."""
-    token = create_access_token(user.id)
+    token = create_access_token(user.id, extra_claims={"ver": user.token_version or 0})
     return schemas.AuthResponse(
         access_token=token,
         token_type="bearer",
@@ -172,6 +177,10 @@ def family_has_other_members(db: Session, user: models.User) -> bool:
         .first()
         is not None
     )
+
+
+def hash_reset_code(code: str) -> str:
+    return hashlib.sha256(code.strip().upper().encode("utf-8")).hexdigest()
 
 
 def apply_coin_change(
@@ -352,6 +361,88 @@ def read_current_user(current_user: models.User = Depends(get_current_user)):
     return current_user
 
 
+@app.post("/auth/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+def forgot_password(
+    req: schemas.ForgotPassword,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Send a one-time reset code.
+
+    The response is deliberately identical for known and unknown emails to
+    avoid account enumeration. In development without SMTP the code is
+    returned as ``dev_code`` (and logged) to make local testing possible.
+    """
+    response: Dict[str, str] = {
+        "detail": "Если email зарегистрирован, код отправлен"
+    }
+
+    user = db.query(models.User).filter(models.User.email == req.email).first()
+    if user is None or not user.email:
+        return response
+
+    now = utc_now_naive()
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user.id,
+        models.PasswordResetToken.used_at.is_(None),
+    ).update({models.PasswordResetToken.used_at: now})
+
+    code = secrets.token_hex(5).upper()
+    db.add(
+        models.PasswordResetToken(
+            user_id=user.id,
+            token_hash=hash_reset_code(code),
+            expires_at=now + timedelta(minutes=settings.password_reset_token_minutes),
+        )
+    )
+    db.commit()
+
+    background_tasks.add_task(
+        send_password_reset_code,
+        user.email,
+        user.name,
+        code,
+        settings.password_reset_token_minutes,
+    )
+
+    if not settings.is_production and not settings.smtp_configured:
+        response["dev_code"] = code
+    return response
+
+
+@app.post("/auth/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_password(
+    req: schemas.ResetPassword,
+    db: Session = Depends(get_db),
+):
+    now = utc_now_naive()
+    record = (
+        db.query(models.PasswordResetToken)
+        .filter(
+            models.PasswordResetToken.token_hash == hash_reset_code(req.code),
+            models.PasswordResetToken.used_at.is_(None),
+        )
+        .first()
+    )
+    if record is None or record.expires_at is None or record.expires_at < now:
+        raise HTTPException(status_code=400, detail="Код недействителен или истёк")
+
+    user = db.get(models.User, record.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Код недействителен или истёк")
+
+    user.hashed_password = hash_password(req.new_password)
+    user.token_version = (user.token_version or 0) + 1
+
+    # Invalidate every outstanding code for this user.
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user.id,
+        models.PasswordResetToken.used_at.is_(None),
+    ).update({models.PasswordResetToken.used_at: now})
+    db.commit()
+    return None
+
+
 # --- Families & Invites ---
 @app.post(
     "/families",
@@ -379,6 +470,7 @@ def create_family(
 def invite_family_member(
     family_id: int,
     req: schemas.InviteMember,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_parent),
 ):
@@ -408,7 +500,25 @@ def invite_family_member(
     db.commit()
     db.refresh(db_user)
     hub.notify(family_id, "family")
+    background_tasks.add_task(
+        send_push_to_users,
+        [db_user.id],
+        "FamilyCRM",
+        "Вас добавили в семейное пространство",
+        {"screen": "profile"},
+    )
     return db_user
+
+
+@app.get("/families/{family_id}", response_model=schemas.FamilyResponse)
+def get_family(
+    family_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Lightweight family info (name, join code) for the mobile shell."""
+    require_family_membership(current_user, family_id)
+    return get_family_or_404(db, family_id)
 
 
 @app.get("/families/{family_id}/overview", response_model=schemas.FamilyOverview)
@@ -467,7 +577,7 @@ def update_user_profile(
     return db_user
 
 
-@app.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@app.post("/auth/change-password", response_model=schemas.AuthResponse)
 def change_password(
     payload: schemas.PasswordChange,
     db: Session = Depends(get_db),
@@ -477,8 +587,10 @@ def change_password(
         raise HTTPException(status_code=400, detail="Текущий пароль указан неверно")
 
     current_user.hashed_password = hash_password(payload.new_password)
+    current_user.token_version = (current_user.token_version or 0) + 1
     db.commit()
-    return None
+    db.refresh(current_user)
+    return build_auth_response(current_user)
 
 
 @app.post("/users", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
@@ -543,18 +655,92 @@ def join_family(
 def update_user_location(
     user_id: int,
     loc: schemas.UserLocationUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     require_self(current_user, user_id)
     db_user = get_user_or_404(db, user_id)
 
+    previous_latitude = db_user.latitude
+    previous_longitude = db_user.longitude
+
+    alerts = []
+    # Transitions are only meaningful when we know the previous position;
+    # the first fix simply stores the coordinate.
+    if (
+        db_user.family_id is not None
+        and previous_latitude is not None
+        and previous_longitude is not None
+    ):
+        fences = (
+            db.query(models.Geofence)
+            .filter(models.Geofence.family_id == db_user.family_id)
+            .all()
+        )
+        for fence in fences:
+            was_inside = is_inside(
+                previous_latitude,
+                previous_longitude,
+                fence.latitude,
+                fence.longitude,
+                fence.radius_m,
+            )
+            now_inside = is_inside(
+                loc.latitude, loc.longitude, fence.latitude, fence.longitude, fence.radius_m
+            )
+            if was_inside == now_inside:
+                continue
+            alert_type = "enter" if now_inside else "exit"
+            if alert_type == "enter" and not fence.notify_enter:
+                continue
+            if alert_type == "exit" and not fence.notify_exit:
+                continue
+            alerts.append(
+                models.LocationAlert(
+                    family_id=db_user.family_id,
+                    user_id=db_user.id,
+                    geofence_id=fence.id,
+                    geofence_name=fence.name,
+                    user_name=db_user.name,
+                    type=alert_type,
+                    latitude=loc.latitude,
+                    longitude=loc.longitude,
+                )
+            )
+
     db_user.latitude = loc.latitude
     db_user.longitude = loc.longitude
     db_user.last_updated = utc_now_naive()
+    if alerts:
+        db.add_all(alerts)
     db.commit()
     db.refresh(db_user)
     hub.notify(db_user.family_id, "location")
+
+    if alerts and db_user.family_id is not None:
+        parent_ids = [
+            parent.id
+            for parent in db.query(models.User)
+            .filter(
+                models.User.family_id == db_user.family_id,
+                models.User.role == models.ROLE_PARENT,
+                models.User.id != db_user.id,
+            )
+            .all()
+        ]
+        for alert in alerts:
+            if not parent_ids:
+                break
+            action = "вошёл в" if alert.type == "enter" else "покинул"
+            background_tasks.add_task(
+                send_push_to_users,
+                parent_ids,
+                "Геозона",
+                f"{db_user.name} {action} «{alert.geofence_name}»",
+                {"screen": "locator", "geofenceId": alert.geofence_id},
+            )
+
     return db_user
 
 
@@ -610,6 +796,88 @@ def get_coin_history(
             schemas.CoinTransactionResponse.model_validate(t) for t in transactions
         ],
     )
+
+
+# --- Push subscriptions ---
+@app.get(
+    "/users/{user_id}/push-subscriptions",
+    response_model=List[schemas.PushSubscriptionResponse],
+)
+def list_push_subscriptions(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_self(current_user, user_id)
+    return (
+        db.query(models.PushSubscription)
+        .filter(
+            models.PushSubscription.user_id == user_id,
+            models.PushSubscription.active.is_(True),
+        )
+        .all()
+    )
+
+
+@app.post(
+    "/users/{user_id}/push-subscriptions",
+    response_model=schemas.PushSubscriptionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_push_subscription(
+    user_id: int,
+    payload: schemas.PushSubscriptionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_self(current_user, user_id)
+    now = utc_now_naive()
+
+    subscription = (
+        db.query(models.PushSubscription)
+        .filter(models.PushSubscription.token == payload.token)
+        .first()
+    )
+    if subscription is None:
+        subscription = models.PushSubscription(
+            user_id=user_id,
+            token=payload.token,
+            platform=payload.platform,
+            active=True,
+            updated_at=now,
+        )
+        db.add(subscription)
+    else:
+        # The same device may switch accounts: move the token to the caller.
+        subscription.user_id = user_id
+        subscription.platform = payload.platform
+        subscription.active = True
+        subscription.updated_at = now
+
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+
+@app.delete("/users/{user_id}/push-subscriptions", status_code=204)
+def remove_push_subscription(
+    user_id: int,
+    token: Optional[str] = Query(default=None, max_length=255),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_self(current_user, user_id)
+
+    query = db.query(models.PushSubscription).filter(
+        models.PushSubscription.user_id == user_id
+    )
+    if token:
+        query = query.filter(models.PushSubscription.token == token)
+
+    for subscription in query.all():
+        db.delete(subscription)
+    db.commit()
+    return None
 
 
 # --- Shop ---
@@ -765,10 +1033,152 @@ def delete_family_budget(
     return None
 
 
+# --- Geofences & location alerts ---
+@app.get(
+    "/families/{family_id}/geofences",
+    response_model=List[schemas.GeofenceResponse],
+)
+def get_family_geofences(
+    family_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_family_membership(current_user, family_id)
+    return (
+        db.query(models.Geofence)
+        .filter(models.Geofence.family_id == family_id)
+        .order_by(models.Geofence.name)
+        .all()
+    )
+
+
+@app.post(
+    "/families/{family_id}/geofences",
+    response_model=schemas.GeofenceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_geofence(
+    family_id: int,
+    payload: schemas.GeofenceCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_parent),
+):
+    require_family_membership(current_user, family_id)
+
+    existing = (
+        db.query(models.Geofence)
+        .filter(
+            models.Geofence.family_id == family_id,
+            models.Geofence.name == payload.name,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400, detail="Геозона с таким названием уже существует"
+        )
+
+    geofence = models.Geofence(
+        family_id=family_id,
+        name=payload.name,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        radius_m=payload.radius_m,
+        notify_enter=payload.notify_enter,
+        notify_exit=payload.notify_exit,
+        created_by_id=current_user.id,
+        updated_at=utc_now_naive(),
+    )
+    db.add(geofence)
+    db.commit()
+    db.refresh(geofence)
+    hub.notify(family_id, "location")
+    return geofence
+
+
+@app.patch("/geofences/{geofence_id}", response_model=schemas.GeofenceResponse)
+def update_geofence(
+    geofence_id: int,
+    payload: schemas.GeofenceUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_parent),
+):
+    geofence = db.get(models.Geofence, geofence_id)
+    if geofence is None:
+        raise HTTPException(status_code=404, detail="Геозона не найдена")
+
+    require_family_membership(current_user, geofence.family_id)
+
+    data = payload.model_dump(exclude_unset=True)
+    new_name = data.get("name")
+    if new_name and new_name != geofence.name:
+        duplicate = (
+            db.query(models.Geofence)
+            .filter(
+                models.Geofence.family_id == geofence.family_id,
+                models.Geofence.name == new_name,
+                models.Geofence.id != geofence.id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=400, detail="Геозона с таким названием уже существует"
+            )
+
+    for field, value in data.items():
+        setattr(geofence, field, value)
+    geofence.updated_at = utc_now_naive()
+
+    db.commit()
+    db.refresh(geofence)
+    hub.notify(geofence.family_id, "location")
+    return geofence
+
+
+@app.delete("/geofences/{geofence_id}", status_code=204)
+def delete_geofence(
+    geofence_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_parent),
+):
+    geofence = db.get(models.Geofence, geofence_id)
+    if geofence is None:
+        raise HTTPException(status_code=404, detail="Геозона не найдена")
+
+    require_family_membership(current_user, geofence.family_id)
+    family_id = geofence.family_id
+    db.delete(geofence)
+    db.commit()
+    hub.notify(family_id, "location")
+    return None
+
+
+@app.get(
+    "/families/{family_id}/location-alerts",
+    response_model=List[schemas.LocationAlertResponse],
+)
+def get_location_alerts(
+    family_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_family_membership(current_user, family_id)
+    return (
+        db.query(models.LocationAlert)
+        .filter(models.LocationAlert.family_id == family_id)
+        .order_by(models.LocationAlert.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 # --- Events (Calendar) ---
 @app.post("/events", response_model=schemas.EventResponse, status_code=status.HTTP_201_CREATED)
 def create_event(
     event: schemas.EventCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -806,6 +1216,16 @@ def create_event(
     db.commit()
     db.refresh(candidate)
     hub.notify(candidate.family_id, "events")
+
+    if candidate.user_id != current_user.id:
+        background_tasks.add_task(
+            send_push_to_users,
+            [candidate.user_id],
+            "Новое событие в календаре",
+            f"{current_user.name}: {candidate.title}",
+            {"screen": "calendar", "eventId": candidate.id},
+        )
+
     return candidate
 
 
@@ -922,6 +1342,7 @@ def delete_event(
 @app.post("/tasks", response_model=schemas.TaskResponse, status_code=status.HTTP_201_CREATED)
 def create_task(
     task: schemas.TaskCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_parent),
 ):
@@ -952,6 +1373,16 @@ def create_task(
     db.commit()
     db.refresh(db_task)
     hub.notify(db_task.family_id, "tasks")
+
+    if db_task.assigned_to_id and db_task.assigned_to_id != current_user.id:
+        background_tasks.add_task(
+            send_push_to_users,
+            [db_task.assigned_to_id],
+            "Новая задача",
+            f"{current_user.name}: {db_task.title}",
+            {"screen": "tasks", "taskId": db_task.id},
+        )
+
     return db_task
 
 
@@ -1001,6 +1432,7 @@ def update_task(
 def update_task_status(
     task_id: int,
     update: schemas.TaskUpdateStatus,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -1046,6 +1478,20 @@ def update_task_status(
     db.commit()
     db.refresh(db_task)
     hub.notify(db_task.family_id, "tasks")
+
+    if (
+        new_status == models.TASK_DONE
+        and old_status != models.TASK_DONE
+        and db_task.created_by_id != current_user.id
+    ):
+        background_tasks.add_task(
+            send_push_to_users,
+            [db_task.created_by_id],
+            "Задача выполнена",
+            f"{current_user.name}: {db_task.title} (+{db_task.reward_coins} 🪙)",
+            {"screen": "tasks", "taskId": db_task.id},
+        )
+
     return db_task
 
 

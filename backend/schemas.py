@@ -216,6 +216,99 @@ class PasswordChange(BaseModel):
         return value
 
 
+class ForgotPassword(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if "@" not in value:
+            raise ValueError("Некорректный email")
+        return value
+
+
+class ResetPassword(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
+    new_password: str = Field(min_length=6, max_length=128)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+            raise ValueError(
+                f"Пароль не должен превышать {BCRYPT_MAX_PASSWORD_BYTES} байт"
+            )
+        return value
+
+
+# --- Geofences ---
+class GeofenceBase(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_m: float = Field(ge=30, le=10_000)
+    notify_enter: bool = True
+    notify_exit: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Название геозоны не может быть пустым")
+        return value
+
+
+class GeofenceCreate(GeofenceBase):
+    pass
+
+
+class GeofenceUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    radius_m: Optional[float] = Field(default=None, ge=30, le=10_000)
+    notify_enter: Optional[bool] = None
+    notify_exit: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Название геозоны не может быть пустым")
+        return value
+
+
+class GeofenceResponse(GeofenceBase, ORMBase):
+    id: int
+
+
+class LocationAlertResponse(ORMBase):
+    id: int
+    user_id: int
+    user_name: str
+    geofence_id: Optional[int] = None
+    geofence_name: str
+    type: Literal["enter", "exit"]
+    latitude: float
+    longitude: float
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def to_utc(cls, value: datetime) -> datetime:
+        return as_utc(value)
+
+
 # --- Event (Calendar) Schemas ---
 class EventBase(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -392,6 +485,36 @@ class BudgetResponse(ORMBase):
     id: int
     category: str
     monthly_limit: float
+
+
+# --- Push notifications ---
+class PushSubscriptionCreate(BaseModel):
+    token: str = Field(min_length=10, max_length=255)
+    platform: Literal["ios", "android", "web", "unknown"] = "unknown"
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: str) -> str:
+        value = value.strip()
+        if not (
+            value.startswith("ExponentPushToken[")
+            or value.startswith("ExpoPushToken[")
+        ) or not value.endswith("]"):
+            raise ValueError("Некорректный Expo push-токен")
+        return value
+
+
+class PushSubscriptionResponse(ORMBase):
+    id: int
+    platform: str
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def to_utc(cls, value: datetime) -> datetime:
+        return as_utc(value)
 
 
 # --- Shop / Room / Coins ---

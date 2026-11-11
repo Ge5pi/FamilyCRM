@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -15,11 +16,57 @@ import { THEME } from '../theme';
 import { api } from '../api';
 import { formatTime } from '../datetime';
 import FamilyMap from '../components/FamilyMap';
+import GeofenceModal from '../components/GeofenceModal';
+import useFamilyResource from '../useFamilyResource';
+import {
+  isBackgroundTrackingActive,
+  startBackgroundTracking,
+  stopBackgroundTracking,
+} from '../backgroundLocation';
 
-export default function LocatorScreen({ user, data, refreshData }) {
+export default function LocatorScreen({
+  user,
+  members,
+  family,
+  refreshKey,
+  refreshData,
+}) {
   const [busy, setBusy] = useState(false);
+  const [backgroundOn, setBackgroundOn] = useState(false);
+  const [backgroundBusy, setBackgroundBusy] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [editingFence, setEditingFence] = useState(null);
 
-  // Cross-platform Alert wrapper
+  const isParent = user?.role === 'Parent';
+  const familyId = user?.family_id;
+  const users = members || [];
+
+  const {
+    data: geofencesData,
+    error: geofencesError,
+    refresh: refreshGeofences,
+  } = useFamilyResource(
+    familyId ? `/families/${familyId}/geofences` : null,
+    { refreshKey }
+  );
+
+  const {
+    data: alertsData,
+    refresh: refreshAlerts,
+  } = useFamilyResource(
+    familyId ? `/families/${familyId}/location-alerts?limit=20` : null,
+    { refreshKey }
+  );
+
+  const geofences = geofencesData || [];
+  const alerts = alertsData || [];
+
+  useEffect(() => {
+    isBackgroundTrackingActive()
+      .then(setBackgroundOn)
+      .catch(() => {});
+  }, []);
+
   const showAlert = (title, message) => {
     if (Platform.OS === 'web') {
       window.alert(`${title}\n\n${message}`);
@@ -28,7 +75,16 @@ export default function LocatorScreen({ user, data, refreshData }) {
     }
   };
 
-  const users = data?.users || [];
+  const showConfirm = (title, message, onConfirm) => {
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${title}\n\n${message}`)) onConfirm();
+    } else {
+      Alert.alert(title, message, [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'ОК', onPress: onConfirm, style: 'destructive' },
+      ]);
+    }
+  };
 
   const getCurrentPosition = () => {
     if (Platform.OS === 'web') {
@@ -66,7 +122,8 @@ export default function LocatorScreen({ user, data, refreshData }) {
         longitude: position.coords.longitude,
       });
       showAlert('Обновлено', 'Геопозиция отправлена семье!');
-      refreshData();
+      refreshData?.();
+      refreshAlerts();
     } catch (err) {
       showAlert(
         'Геолокация недоступна',
@@ -77,6 +134,51 @@ export default function LocatorScreen({ user, data, refreshData }) {
     }
   };
 
+  const toggleBackground = async (value) => {
+    if (backgroundBusy) return;
+    setBackgroundBusy(true);
+    try {
+      if (value) {
+        await startBackgroundTracking();
+        setBackgroundOn(true);
+        showAlert(
+          'Фоновая геолокация включена',
+          'Приложение будет передавать позицию семьи примерно раз в минуту или при перемещении на 100 м.'
+        );
+      } else {
+        await stopBackgroundTracking();
+        setBackgroundOn(false);
+      }
+    } catch (err) {
+      showAlert(
+        'Не удалось изменить режим',
+        err.message || 'Проверьте разрешения геолокации'
+      );
+    } finally {
+      setBackgroundBusy(false);
+    }
+  };
+
+  const openAddFence = () => {
+    setEditingFence(null);
+    setModalVisible(true);
+  };
+
+  const openEditFence = (fence) => {
+    setEditingFence(fence);
+    setModalVisible(true);
+  };
+
+  const deleteFence = (fence) => {
+    showConfirm('Удалить геозону?', `Удалить «${fence.name}»?`, async () => {
+      try {
+        await api.delete(`/geofences/${fence.id}`);
+        refreshGeofences();
+      } catch (err) {
+        showAlert('Ошибка', err.message || 'Не удалось удалить геозону');
+      }
+    });
+  };
 
   return (
     <ScrollView style={styles.container}>
@@ -84,7 +186,29 @@ export default function LocatorScreen({ user, data, refreshData }) {
         <Text style={styles.subtitle}>Текущая геопозиция членов семьи</Text>
       </View>
 
-      <FamilyMap members={users} currentUserId={user.id} />
+      <FamilyMap
+        members={users}
+        geofences={geofences}
+        currentUserId={user.id}
+      />
+
+      {Platform.OS !== 'web' ? (
+        <View style={styles.card}>
+          <View style={styles.switchRow}>
+            <Text style={styles.switchLabel}>Передавать геопозицию в фоне</Text>
+            <Switch
+              value={backgroundOn}
+              onValueChange={toggleBackground}
+              disabled={backgroundBusy}
+              trackColor={{ true: THEME.colors.primary }}
+            />
+          </View>
+          <Text style={styles.hint}>
+            Обновления примерно раз в минуту или при перемещении на 100 м. На iOS
+            потребуется разрешение «Всегда».
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.memberList}>
         {users.map((member) => {
@@ -119,7 +243,7 @@ export default function LocatorScreen({ user, data, refreshData }) {
 
       <View style={styles.inviteCard}>
         <Text style={styles.inviteTitle}>Код вашей семьи</Text>
-        <Text style={styles.joinCodeText}>{data?.join_code || 'Загрузка...'}</Text>
+        <Text style={styles.joinCodeText}>{family?.join_code || 'Загрузка...'}</Text>
         <Text style={styles.inviteHint}>
           Скопируйте этот код и отправьте близким. Они смогут ввести его при регистрации, чтобы присоединиться к вашей семье.
         </Text>
@@ -136,6 +260,90 @@ export default function LocatorScreen({ user, data, refreshData }) {
           <Text style={styles.shareBtnText}>Отправить мою геопозицию семье</Text>
         )}
       </TouchableOpacity>
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Геозоны</Text>
+        {isParent ? (
+          <TouchableOpacity style={styles.addFenceBtn} onPress={openAddFence}>
+            <Text style={styles.addFenceText}>+ Добавить</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      {geofencesError ? (
+        <Text style={styles.errorBanner}>{geofencesError}</Text>
+      ) : null}
+
+      {geofences.length === 0 ? (
+        <Text style={styles.emptyText}>
+          {isParent
+            ? 'Добавьте школу или дом, чтобы получать уведомления о входе и выходе.'
+            : 'Родитель пока не настроил геозоны.'}
+        </Text>
+      ) : (
+        geofences.map((fence) => (
+          <TouchableOpacity
+            key={fence.id}
+            style={styles.fenceCard}
+            activeOpacity={isParent ? 0.7 : 1}
+            onPress={() => isParent && openEditFence(fence)}
+          >
+            <View style={styles.fenceInfo}>
+              <Text style={styles.fenceName}>{fence.name}</Text>
+              <Text style={styles.fenceMeta}>
+                радиус {Math.round(fence.radius_m)} м
+                {fence.notify_enter ? ' · вход' : ''}
+                {fence.notify_exit ? ' · выход' : ''}
+              </Text>
+            </View>
+            {isParent ? (
+              <TouchableOpacity
+                style={styles.fenceDelete}
+                onPress={() => deleteFence(fence)}
+              >
+                <Text style={styles.fenceDeleteText}>✕</Text>
+              </TouchableOpacity>
+            ) : null}
+          </TouchableOpacity>
+        ))
+      )}
+
+      <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>
+        События геозон
+      </Text>
+      <View style={styles.alertList}>
+        {alerts.length === 0 ? (
+          <Text style={styles.emptyText}>Пока событий нет.</Text>
+        ) : (
+          alerts.map((alert) => (
+            <View key={alert.id} style={styles.alertRow}>
+              <Text style={styles.alertIcon}>
+                {alert.type === 'enter' ? '→' : '←'}
+              </Text>
+              <View style={styles.alertBody}>
+                <Text style={styles.alertText}>
+                  {alert.user_name}{' '}
+                  {alert.type === 'enter' ? 'вошёл в' : 'покинул'} «
+                  {alert.geofence_name}»
+                </Text>
+                <Text style={styles.alertTime}>{formatTime(alert.created_at)}</Text>
+              </View>
+            </View>
+          ))
+        )}
+      </View>
+
+      <GeofenceModal
+        visible={modalVisible}
+        familyId={familyId}
+        geofence={editingFence}
+        user={user}
+        onClose={() => setModalVisible(false)}
+        onSaved={() => {
+          refreshGeofences();
+          refreshData?.();
+        }}
+      />
     </ScrollView>
   );
 }
@@ -153,8 +361,32 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: THEME.colors.textLight,
   },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: THEME.spacing.md,
+    marginBottom: THEME.spacing.md,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  switchLabel: {
+    fontSize: 13,
+    color: THEME.colors.text,
+    fontWeight: 'bold',
+  },
+  hint: {
+    fontSize: 10,
+    color: THEME.colors.textLight,
+    marginTop: 6,
+    fontStyle: 'italic',
+  },
   memberList: {
-    marginBottom: THEME.spacing.lg,
+    marginBottom: THEME.spacing.md,
   },
   memberCard: {
     backgroundColor: '#FFFFFF',
@@ -217,7 +449,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: THEME.roundness.md,
     alignItems: 'center',
-    marginBottom: THEME.spacing.xl,
+    marginBottom: THEME.spacing.lg,
   },
   shareBtnText: {
     color: '#FFFFFF',
@@ -253,5 +485,116 @@ const styles = StyleSheet.create({
     color: THEME.colors.textLight,
     textAlign: 'center',
     marginTop: THEME.spacing.sm,
-  }
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: THEME.spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: THEME.colors.text,
+  },
+  sectionTitleSpaced: {
+    marginTop: THEME.spacing.lg,
+    marginBottom: THEME.spacing.sm,
+  },
+  addFenceBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: THEME.roundness.sm,
+    borderWidth: 1,
+    borderColor: THEME.colors.primary,
+  },
+  addFenceText: {
+    fontSize: 11,
+    color: THEME.colors.primary,
+    fontWeight: 'bold',
+  },
+  fenceCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: THEME.spacing.md,
+    marginTop: THEME.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  fenceInfo: {
+    flex: 1,
+  },
+  fenceName: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: THEME.colors.text,
+  },
+  fenceMeta: {
+    fontSize: 10,
+    color: THEME.colors.textLight,
+    marginTop: 2,
+  },
+  fenceDelete: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FDECEE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fenceDeleteText: {
+    color: THEME.colors.danger,
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  alertList: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.roundness.md,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: THEME.spacing.sm,
+    marginBottom: THEME.spacing.xl,
+  },
+  alertRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5EFE6',
+  },
+  alertIcon: {
+    fontSize: 14,
+    color: THEME.colors.primary,
+    marginRight: 8,
+    fontWeight: 'bold',
+  },
+  alertBody: {
+    flex: 1,
+  },
+  alertText: {
+    fontSize: 11,
+    color: THEME.colors.text,
+  },
+  alertTime: {
+    fontSize: 9,
+    color: THEME.colors.textLight,
+    marginTop: 2,
+  },
+  emptyText: {
+    fontSize: 11,
+    color: THEME.colors.textLight,
+    fontStyle: 'italic',
+    marginTop: THEME.spacing.sm,
+  },
+  errorBanner: {
+    backgroundColor: '#FDECEE',
+    color: THEME.colors.danger,
+    fontSize: 11,
+    padding: 8,
+    borderRadius: THEME.roundness.sm,
+    marginTop: THEME.spacing.sm,
+  },
 });

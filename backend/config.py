@@ -44,6 +44,22 @@ class Settings(BaseSettings):
     # Comma separated list of allowed origins, or "*" for local development.
     cors_origins: str = "*"
 
+    # Password reset
+    password_reset_token_minutes: int = 30
+
+    # Remote push notifications (Expo Push API)
+    push_enabled: bool = True
+    expo_push_url: str = "https://exp.host/--/api/v2/push/send"
+
+    # SMTP for transactional email (password reset). Without SMTP the reset
+    # code is logged and, in non-production, returned by the API for testing.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+
     @field_validator("database_url")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
@@ -83,6 +99,10 @@ class Settings(BaseSettings):
     @property
     def uses_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host and self.smtp_from)
 
 
 @lru_cache

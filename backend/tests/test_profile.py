@@ -75,13 +75,23 @@ def test_avatar_is_visible_to_family_members(client, register, auth_headers):
 
 def test_change_password_flow(client, register):
     user = register(email="pwd@example.com", password="secret123")
+    headers = {"Authorization": f"Bearer {user['access_token']}"}
 
     response = client.post(
         "/auth/change-password",
         json={"current_password": "secret123", "new_password": "newsecret456"},
-        headers={"Authorization": f"Bearer {user['access_token']}"},
+        headers=headers,
     )
-    assert response.status_code == 204
+    assert response.status_code == 200
+    rotated = response.json()
+    assert rotated["access_token"]
+
+    # The old token is invalidated, the rotated one works.
+    assert client.get("/auth/me", headers=headers).status_code == 401
+    assert client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {rotated['access_token']}"},
+    ).status_code == 200
 
     old_login = client.post(
         "/auth/login", json={"email": "pwd@example.com", "password": "secret123"}

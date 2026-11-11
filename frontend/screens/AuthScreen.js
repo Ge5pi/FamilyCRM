@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, Platform } from 'react-native';
 import { THEME } from '../theme';
 import { api } from '../api';
+import PasswordResetScreen from './PasswordResetScreen';
 
 export default function AuthScreen({ onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
@@ -13,6 +14,7 @@ export default function AuthScreen({ onLoginSuccess }) {
   const [createFamilyName, setCreateFamilyName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showReset, setShowReset] = useState(false);
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -22,6 +24,18 @@ export default function AuthScreen({ onLoginSuccess }) {
       Alert.alert(title, message);
     }
   };
+
+  if (showReset) {
+    return (
+      <PasswordResetScreen
+        onBack={() => setShowReset(false)}
+        onDone={() => {
+          setShowReset(false);
+          setIsRegister(false);
+        }}
+      />
+    );
+  }
 
   const handleSubmit = async () => {
     if (!email || !password || (isRegister && !name)) {
@@ -156,6 +170,15 @@ export default function AuthScreen({ onLoginSuccess }) {
             {submitting ? 'Подождите…' : (isRegister ? 'Зарегистрироваться' : 'Войти')}
           </Text>
         </TouchableOpacity>
+
+        {!isRegister ? (
+          <TouchableOpacity
+            style={styles.toggleBtn}
+            onPress={() => setShowReset(true)}
+          >
+            <Text style={styles.toggleBtnText}>Забыли пароль?</Text>
+          </TouchableOpacity>
+        ) : null}
 
         <TouchableOpacity 
           style={styles.toggleBtn} 

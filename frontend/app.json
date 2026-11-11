@@ -17,9 +17,14 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "FamilyCRM использует геолокацию, чтобы показывать ваше местоположение только членам семьи."
+          "locationWhenInUsePermission": "FamilyCRM использует геолокацию, чтобы показывать ваше местоположение только членам семьи.",
+          "locationAlwaysAndWhenInUsePermission": "FamilyCRM передаёт геопозицию семье в фоне, чтобы работали геозоны (школа, дом).",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
-      ]
+      ],
+      "expo-notifications"
     ]
   }
 }

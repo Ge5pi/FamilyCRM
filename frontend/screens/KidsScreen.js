@@ -13,7 +13,7 @@ import { api } from '../api';
 import { formatDate } from '../datetime';
 import { THEME } from '../theme';
 
-export default function KidsScreen({ user, refreshData }) {
+export default function KidsScreen({ user, refreshKey, refreshData }) {
   const [room, setRoom] = useState(null);
   const [shopItems, setShopItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +61,7 @@ export default function KidsScreen({ user, refreshData }) {
   // another screen (task completed, reward revoked, purchase).
   useEffect(() => {
     loadRoom();
-  }, [loadRoom, user.coins]);
+  }, [loadRoom, user.coins, refreshKey]);
 
   const coins = room ? room.coins : user.coins || 0;
   const purchasedKeys = (room?.purchases || []).map((purchase) => purchase.item_key);

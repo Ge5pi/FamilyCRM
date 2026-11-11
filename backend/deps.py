@@ -37,6 +37,15 @@ def get_current_user(
     user = db.get(models.User, user_id)
     if user is None:
         raise CREDENTIALS_EXCEPTION
+
+    # Password changes/resets bump token_version and invalidate old tokens.
+    try:
+        token_version = int(payload.get("ver", 0))
+    except (TypeError, ValueError):
+        raise CREDENTIALS_EXCEPTION
+    if token_version != (user.token_version or 0):
+        raise CREDENTIALS_EXCEPTION
+
     return user
 
 

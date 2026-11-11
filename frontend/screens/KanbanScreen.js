@@ -3,17 +3,25 @@ import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert,
 import { THEME } from '../theme';
 import { api } from '../api';
 import TaskEditModal from '../components/TaskEditModal';
+import useFamilyResource from '../useFamilyResource';
 
-export default function KanbanScreen({ user, data, refreshData }) {
+export default function KanbanScreen({ user, members, refreshKey, refreshData }) {
   const [taskTitle, setTaskTitle] = useState('');
   const [rewardCoins, setRewardCoins] = useState('10');
   const [assignToId, setAssignToId] = useState(null); // null = pick in selector
   const [editingTask, setEditingTask] = useState(null);
   
-  const members = data?.users || [];
   const isParent = user.role === 'Parent';
-
-  const tasks = data?.tasks || [];
+  const familyId = user?.family_id;
+  const {
+    data: tasksData,
+    error: tasksError,
+    refresh: refreshTasks,
+  } = useFamilyResource(
+    familyId ? `/families/${familyId}/tasks` : null,
+    { refreshKey }
+  );
+  const tasks = tasksData || [];
 
   // Cross-platform Alert wrapper
   const showAlert = (title, message) => {
@@ -53,7 +61,8 @@ export default function KanbanScreen({ user, data, refreshData }) {
       await api.post('/tasks', newTask);
       setTaskTitle('');
       setAssignToId(null);
-      refreshData();
+      refreshTasks();
+      refreshData?.();
       showAlert('Создано', 'Задача добавлена в Kanban-доску!');
     } catch (err) {
       showAlert('Ошибка', err.message || 'Не удалось создать задачу');
@@ -68,7 +77,8 @@ export default function KanbanScreen({ user, data, refreshData }) {
 
     try {
       await api.put(`/tasks/${taskId}/status`, { status: nextStatus });
-      refreshData();
+      refreshTasks();
+      refreshData?.();
       if (nextStatus === 'DONE') {
         showAlert('Ура! 🎉', 'Задание выполнено! Коины начислены.');
       }
@@ -126,6 +136,8 @@ export default function KanbanScreen({ user, data, refreshData }) {
 
   return (
     <View style={styles.container}>
+      {tasksError ? <Text style={styles.errorBanner}>{tasksError}</Text> : null}
+
       <View style={styles.coinHeader}>
         <Text style={styles.welcomeText}>
           Привет, {user.name}! {user.avatar || ''}
@@ -203,7 +215,10 @@ export default function KanbanScreen({ user, data, refreshData }) {
         task={editingTask}
         members={members}
         onClose={() => setEditingTask(null)}
-        onSaved={refreshData}
+        onSaved={() => {
+          refreshTasks();
+          refreshData?.();
+        }}
       />
     </View>
   );
@@ -214,6 +229,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: THEME.colors.background,
     padding: THEME.spacing.md,
+  },
+  errorBanner: {
+    backgroundColor: '#FDECEE',
+    color: THEME.colors.danger,
+    fontSize: 11,
+    padding: 8,
+    borderRadius: THEME.roundness.sm,
+    marginBottom: THEME.spacing.sm,
   },
   coinHeader: {
     flexDirection: 'row',

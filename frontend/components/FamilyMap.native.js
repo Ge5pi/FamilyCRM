@@ -1,12 +1,12 @@
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Circle, Marker } from 'react-native-maps';
 
 import { THEME } from '../theme';
 
-function buildRegion(located) {
-  const lats = located.map((member) => member.latitude);
-  const lngs = located.map((member) => member.longitude);
+function buildRegion(points) {
+  const lats = points.map((point) => point.latitude);
+  const lngs = points.map((point) => point.longitude);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs);
@@ -21,7 +21,7 @@ function buildRegion(located) {
   };
 }
 
-export default function FamilyMap({ members, currentUserId }) {
+export default function FamilyMap({ members, geofences, currentUserId }) {
   const located = useMemo(
     () =>
       (members || []).filter(
@@ -31,9 +31,30 @@ export default function FamilyMap({ members, currentUserId }) {
     [members]
   );
 
-  const region = useMemo(() => buildRegion(located), [located]);
+  const fences = useMemo(
+    () =>
+      (geofences || []).filter(
+        (fence) =>
+          typeof fence.latitude === 'number' && typeof fence.longitude === 'number'
+      ),
+    [geofences]
+  );
 
-  if (!located.length) {
+  const region = useMemo(() => {
+    const points = [
+      ...located.map((member) => ({
+        latitude: member.latitude,
+        longitude: member.longitude,
+      })),
+      ...fences.map((fence) => ({
+        latitude: fence.latitude,
+        longitude: fence.longitude,
+      })),
+    ];
+    return points.length ? buildRegion(points) : null;
+  }, [located, fences]);
+
+  if (!region) {
     return (
       <View style={styles.placeholder}>
         <Text style={styles.placeholderIcon}>🗺️</Text>
@@ -48,6 +69,15 @@ export default function FamilyMap({ members, currentUserId }) {
   return (
     <View style={styles.wrapper}>
       <MapView style={styles.map} initialRegion={region}>
+        {fences.map((fence) => (
+          <Circle
+            key={`fence-${fence.id}`}
+            center={{ latitude: fence.latitude, longitude: fence.longitude }}
+            radius={fence.radius_m}
+            strokeColor="rgba(134,167,137,0.9)"
+            fillColor="rgba(134,167,137,0.18)"
+          />
+        ))}
         {located.map((member) => (
           <Marker
             key={member.id}

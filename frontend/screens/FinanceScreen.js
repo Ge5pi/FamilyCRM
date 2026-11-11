@@ -13,11 +13,17 @@ import {
 import { api } from '../api';
 import { formatDate, parseApiDate } from '../datetime';
 import BudgetModal from '../components/BudgetModal';
+import useFamilyResource from '../useFamilyResource';
 import { THEME } from '../theme';
 
 const CATEGORIES = ['Продукты', 'Коммунальные', 'Развлечения', 'Другое'];
 
-export default function FinanceScreen({ user, data, refreshData }) {
+export default function FinanceScreen({
+  user,
+  refreshKey,
+  budgetsRefreshKey = 0,
+  refreshData,
+}) {
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('Продукты');
@@ -28,6 +34,15 @@ export default function FinanceScreen({ user, data, refreshData }) {
   const [budgetVisible, setBudgetVisible] = useState(false);
 
   const isParent = user.role === 'Parent';
+  const familyId = user?.family_id;
+  const {
+    data: expensesData,
+    error: expensesError,
+    refresh: refreshExpenses,
+  } = useFamilyResource(
+    familyId ? `/families/${familyId}/expenses` : null,
+    { refreshKey }
+  );
 
   const showAlert = (alertTitle, message) => {
     if (Platform.OS === 'web') {
@@ -64,7 +79,7 @@ export default function FinanceScreen({ user, data, refreshData }) {
 
   useEffect(() => {
     loadBudgets();
-  }, [loadBudgets]);
+  }, [loadBudgets, budgetsRefreshKey]);
 
   const monthDate = useMemo(() => {
     const now = new Date();
@@ -87,11 +102,11 @@ export default function FinanceScreen({ user, data, refreshData }) {
       59,
       999
     );
-    return (data?.expenses || []).filter((expense) => {
+    return (expensesData || []).filter((expense) => {
       const date = parseApiDate(expense.date);
       return date && date >= start && date <= end;
     });
-  }, [data, monthDate]);
+  }, [expensesData, monthDate]);
 
   const visibleExpenses = useMemo(
     () =>
@@ -135,7 +150,8 @@ export default function FinanceScreen({ user, data, refreshData }) {
       setTitle('');
       setAmount('');
       showAlert('Успешно', 'Расход добавлен!');
-      refreshData();
+      refreshExpenses();
+      refreshData?.();
     } catch (err) {
       showAlert('Ошибка', err.message || 'Не удалось добавить расход');
     }
@@ -148,7 +164,7 @@ export default function FinanceScreen({ user, data, refreshData }) {
       async () => {
         try {
           await api.delete(`/expenses/${expense.id}`);
-          refreshData();
+          refreshExpenses();
         } catch (err) {
           showAlert('Ошибка', err.message || 'Не удалось удалить расход');
         }
@@ -176,6 +192,10 @@ export default function FinanceScreen({ user, data, refreshData }) {
       <View style={styles.header}>
         <Text style={styles.subtitle}>Ручной трекер расходов вашей семьи</Text>
       </View>
+
+      {expensesError ? (
+        <Text style={styles.errorBanner}>{expensesError}</Text>
+      ) : null}
 
       <View style={styles.monthNav}>
         <TouchableOpacity onPress={() => setMonthOffset((value) => value - 1)}>
@@ -350,7 +370,6 @@ export default function FinanceScreen({ user, data, refreshData }) {
         onClose={() => setBudgetVisible(false)}
         onSaved={() => {
           loadBudgets();
-          refreshData();
         }}
       />
     </ScrollView>
@@ -369,6 +388,14 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: THEME.colors.textLight,
+  },
+  errorBanner: {
+    backgroundColor: '#FDECEE',
+    color: THEME.colors.danger,
+    fontSize: 11,
+    padding: 8,
+    borderRadius: THEME.roundness.sm,
+    marginBottom: THEME.spacing.sm,
   },
   monthNav: {
     flexDirection: 'row',
